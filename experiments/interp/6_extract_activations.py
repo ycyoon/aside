@@ -57,7 +57,6 @@ def extract_activations(model_path, embedding_type, base_model):
         templates = json.load(f)
     template = templates[0]
 
-    # Download from here https://github.com/egozverev/embeddings_for_separation/blob/main/data/train_data/alpaca_adv50percent.json
     alpaca_data_path = "../data/alpaca_adv50percent.json"
     with open(alpaca_data_path, "r") as f:
         alpaca_data = json.load(f)

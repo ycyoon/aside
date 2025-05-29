@@ -1752,9 +1752,6 @@ class CustomLLaMA(LlamaForCausalLM):
         device = next(model.parameters()).device
         model_dtype = next(model.parameters()).dtype
         with torch.no_grad():
-            # TODO: using .data bypasses autograd, do not use it if modifying embeddings during training. Also use torch.no_grad()
-            # data_embedding = CustomLLaMA.initialize_data_embedding(model.model.embed_tokens.weight.data[original_vocab_size:], embedding_init, rotation_alpha)
-            # model.model.embed_tokens.weight.data[original_vocab_size:] = data_embedding.to(device=device, dtype=model_dtype)# \
             data_embedding = CustomLLaMA.initialize_data_embedding(
                 model.model.embed_tokens.weight[original_vocab_size:],
                 embedding_init,
@@ -2054,12 +2051,6 @@ class CustomLLaMA(LlamaForCausalLM):
 
         return model
 
-    # def save_pretrained(self, save_directory):
-    #     os.makedirs(save_directory, exist_ok=True)
-    #     # Save configuration
-    #     self.config.save_pretrained(save_directory)
-    #     # Save model state dict
-    #     torch.save(self.state_dict(), os.path.join(save_directory, 'pytorch_model.bin121'))
 
     def save_pretrained(self, save_directory, state_dict=None, **kwargs):
         """
@@ -2077,5 +2068,4 @@ class CustomLLaMA(LlamaForCausalLM):
             )  # Use the model's current state dict if not provided
         torch.save(state_dict, os.path.join(save_directory, "pytorch_model.bin"))
 
-        # Save additional files (e.g., tokenizer or special handling for custom models)
-        # Add any additional custom saving logic here if needed
+        
