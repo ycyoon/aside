@@ -1,0 +1,110 @@
+{
+  "desc": "Using isoclinic pi/2 embedding, alpaca shuffled",
+  "train_dataset_path": "./data/train_data/alpaca_52k_shuffled_train.json",
+  "eval_dataset_path": "./data/train_data/alpaca_52k_shuffled_eval.json",
+  "eval_input_path": "n/a, set in code",
+  "prompt_templates_path": "./data/prompt_templates.json",
+  "output_base_path": "./model_outputs/",
+  "train_logs_path": "./model_outputs/train_logs/",
+  "training_version": "SFTv110",
+  "tokenizer_path": "meta-llama/Llama-2-7b-chat-hf",
+  "models": {
+    "double_emb": {
+      "pure_models": [
+        {
+          "desc": "meta-llama/Llama-2-7b-hf ii not trained.",
+          "name": "ii_pure",
+          "checkpoint_to_load_to": "./models/llama_2_7b/ii_pure",
+          "instruct_model_path": "meta-llama/Llama-2-7b-chat-hf",
+          "data_model_path": "meta-llama/Llama-2-7b-chat-hf",
+          "chat_template_path": null,
+          "checkpoint_to_load_from": null
+
+        },
+        {
+          "desc": "meta-llama/Llama-2-7b-hf dd not trained.",
+          "name": "dd_pure",
+          "checkpoint_to_load_to": "./models/llama_2_7b/dd_pure",
+          "instruct_model_path": "meta-llama/Llama-2-7b-hf",
+          "data_model_path": "meta-llama/Llama-2-7b-hf",
+          "chat_template_path": null,
+          "checkpoint_to_load_from": null
+        },
+        {
+          "desc": "meta-llama/Llama-2-7b-hf, from dd_pure, 1 epoch no rotation",
+          "name": "aside_copy_then_aside",
+          "checkpoint_to_load_to": "./models/llama_2_7b/aside_copy_then_aside",
+          "instruct_model_path": "meta-llama/Llama-2-7b-hf",
+          "data_model_path": "meta-llama/Llama-2-7b-hf",
+          "chat_template_path": null,
+          "checkpoint_to_load_from": "./models/llama_2_7b/dd_pure/train_checkpoints/SFTv80/from_base_run_5e-6_norot_1ep/last"
+        }
+      ],
+      "trained_checkpoints": []
+    },
+    "ise": {
+      "pure_models": [
+        {
+          "desc": "meta-llama/Llama-2-7b-hf, vanilla, instr-trained.",
+          "name": "ise_from_instr",
+          "checkpoint_to_load_to": "./models/llama_2_7b/ise",
+          "instruct_model_path": "meta-llama/Llama-2-7b-chat-hf",
+          "chat_template_path": null,
+          "checkpoint_to_load_from": null
+        },
+        {
+          "desc": "meta-llama/Llama-2-7b-hf, vanilla, pre-trained.",
+          "name": "ise",
+          "checkpoint_to_load_to": "./models/llama_2_7b/ise",
+          "instruct_model_path": "meta-llama/Llama-2-7b-hf",
+          "chat_template_path": null,
+          "checkpoint_to_load_from": null
+        }
+      ],
+      "trained_checkpoints": []
+    },
+    "forward_rot": {
+      "pure_models": [
+        {
+          "desc": "meta-llama/Llama-2-7b-hf, vanilla, instr-trained.",
+          "name": "forward_rot_from_instr",
+          "checkpoint_to_load_to": "./models/llama_2_7b/forward_rot_inst",
+          "instruct_model_path": "meta-llama/Llama-2-7b-chat-hf",
+          "chat_template_path": null,
+          "checkpoint_to_load_from": null
+        },
+        {
+          "desc": "meta-llama/Llama-2-7b-hf, vanilla, pre-trained.",
+          "name": "forward_rot",
+          "checkpoint_to_load_to": "./models/llama_2_7b/forward_rot",
+          "instruct_model_path": "meta-llama/Llama-2-7b-hf",
+          "chat_template_path": null,
+          "checkpoint_to_load_from": null
+        }
+      ],
+      "trained_checkpoints": []
+    },
+    "single_emb": {
+      "pure_models": [
+        {
+          "desc": "meta-llama/Llama-2-7b-hf, vanilla, pre-trained.",
+          "name": "instr_vanilla",
+          "checkpoint_to_load_to": "./models/llama_2_7b/instr_vanilla",
+          "instruct_model_path": "meta-llama/Llama-2-7b-chat-hf",
+          "chat_template_path": null,
+          "checkpoint_to_load_from": null
+
+        },
+        {
+          "desc": "meta-llama/Llama-2-7b-hf, vanilla, pre-trained.",
+          "name": "pretrained_vanilla",
+          "checkpoint_to_load_to": "./models/llama_2_7b/pretrained_vanilla",
+          "instruct_model_path": "meta-llama/Llama-2-7b-hf",
+          "chat_template_path": null,
+          "checkpoint_to_load_from": null
+        }
+      ],
+      "trained_checkpoints": []
+    }
+  }
+}

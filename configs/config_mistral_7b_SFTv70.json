@@ -1,0 +1,54 @@
+{
+    "desc": "Mistral rotating embedding, alpaca shuffled",
+    "train_dataset_path": "./data/train_data/alpaca_52k_shuffled_train.json",
+    "eval_dataset_path": "./data/train_data/alpaca_52k_shuffled_eval.json",
+    "prompt_templates_path": "./data/prompt_templates.json",
+    "output_base_path": "./model_outputs/",
+    "train_logs_path": "./model_outputs/train_logs/",
+    "training_version": "SFTv70",
+    "tokenizer_path": "mistralai/Mistral-7B-Instruct-v0.3",
+    "models": {
+        "single_emb": {
+            "pure_models": [
+                {},
+                {
+                    "name": "single_emb",
+                    "desc": "Mistral 7B base model",
+                    "checkpoint_to_load_from": null,
+                    "checkpoint_to_load_to": "./models/Mistral-7B-v0.3/single",
+                    "chat_template_path": null,
+                    "instruct_model_path": "mistralai/Mistral-7B-v0.3",
+                    "data_model_path": "mistralai/Mistral-7B-v0.3"
+                }
+            ]
+        },
+        "ise": {
+            "pure_models": [
+                {},
+                {
+                    "name": "ise",
+                    "desc": "Mistral 7B base model",
+                    "checkpoint_to_load_from": null,
+                    "checkpoint_to_load_to": "./models/Mistral-7B-v0.3/ise",
+                    "chat_template_path": null,
+                    "instruct_model_path": "mistralai/Mistral-7B-v0.3",
+                    "data_model_path": "mistralai/Mistral-7B-v0.3"
+                }
+            ]
+        },
+        "forward_rot": {
+            "pure_models": [
+                {},
+                {
+                    "name": "forward_rot",
+                    "desc": "Mistral 7B base model",
+                    "checkpoint_to_load_from": null,
+                    "checkpoint_to_load_to": "./models/Mistral-7B-v0.3/forward_rot",
+                    "chat_template_path": null,
+                    "instruct_model_path": "mistralai/Mistral-7B-v0.3",
+                    "data_model_path": "mistralai/Mistral-7B-v0.3"
+                }
+            ]
+        }
+    }
+}

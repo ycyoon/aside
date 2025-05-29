@@ -1,0 +1,52 @@
+{
+    "desc": "Qwen rotating embedding, alpaca shuffled",
+    "train_dataset_path": "./data/train_data/alpaca_52k_shuffled_train.json",
+    "eval_dataset_path": "./data/train_data/alpaca_52k_shuffled_eval.json",
+    "eval_input_path": "n/a, set in code",
+    "prompt_templates_path": "./data/prompt_templates.json",
+    "output_base_path": "./model_outputs/",
+    "train_logs_path": "./model_outputs/train_logs/",
+    "training_version": "SFTv70",
+    "tokenizer_path": "Qwen/Qwen2.5-7B-Instruct",
+    "models": {
+        "single_emb": {
+            "pure_models": [
+                {
+                    "name": "dd_pure",
+                    "desc": "Qwen2.5 7B base model",
+                    "checkpoint_to_load_from": null,
+                    "checkpoint_to_load_to": "./models/Qwen2.5-7B/single",
+                    "chat_template_path": null,
+                    "instruct_model_path": "Qwen/Qwen2.5-7B",
+                    "data_model_path": "Qwen/Qwen2.5-7B"
+                }
+            ]
+        },
+        "ise": {
+            "pure_models": [
+                {
+                    "name": "ise",
+                    "desc": "Qwen2.5 7B base model",
+                    "checkpoint_to_load_from": null,
+                    "checkpoint_to_load_to": "./models/Qwen2.5-7B/ise",
+                    "chat_template_path": null,
+                    "instruct_model_path": "Qwen/Qwen2.5-7B",
+                    "data_model_path": "Qwen/Qwen2.5-7B"
+                }
+            ]
+        },
+        "forward_rot": {
+            "pure_models": [
+                {
+                    "name": "forward_rot",
+                    "desc": "Qwen2.5 7B base model",
+                    "checkpoint_to_load_from": null,
+                    "checkpoint_to_load_to": "./models/Qwen2.5-7B/forward_rot",
+                    "chat_template_path": null,
+                    "instruct_model_path": "Qwen/Qwen2.5-7B",
+                    "data_model_path": "Qwen/Qwen2.5-7B"
+                }
+            ]
+        }
+    }
+}
