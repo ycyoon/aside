@@ -29,13 +29,7 @@ pip install -r requirements.txt
 ### Training ASIDE
 ```bash
 # Quick start: Train Qwen 2.5 7B with ASIDE
-deepspeed --num_gpus=8 experiments/fine-tune.py \
-  --model_family qwen2.5_7b \
-  --emb_type forward_rot \
-  --embedding_init rot_isoclinic \
-  --rotation_alpha 1.57079633 \
-  --learning_rate 1e-6 \
-  --num_train_epochs 3
+TBD
 
 ```
 
@@ -122,7 +116,7 @@ aside/
 @inproceedings{zverev2025aside,
   author       = {Zverev, Egor and Kortukov, Evgenii and Panfilov, Alexander and Volkova, Alexandra and Tabesh, Soroush and Lapuschkin, Sebastian and Samek, Wojciech and Lampert, Christoph H.},
   title        = {ASIDE: Architectural Separation of Instructions and Data in Language Models},
-  booktitle    = {ICLR 2025 Workshop Building Trust in LLMs and LLM Applications,
+  booktitle    = {ICLR 2025 Workshop Building Trust in LLMs and LLM Applications},
   year         = {2025},
 }
 ```
