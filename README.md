@@ -1,5 +1,5 @@
 # ASIDE: Architecturally Separated Instruction-Data Embeddings
-### This repo is under development, to be finished by June 6
+### This repo is under development, to be finished by June 13
 
 
 [![Paper](https://img.shields.io/badge/Paper-arXiv-red.svg)](https://arxiv.org/abs/2503.10566)
@@ -90,7 +90,69 @@ TBD
 TBD
 
 
-Read `experiments/evaluations/README.md` for more details. 
+See `experiments/evaluations/README.md` for more details. 
+
+
+### Interpetability
+
+Please see `experiments/interp/README.md` for a dedicated step-by-step guide on how to reproduce our analysis from the paper (Section 6).
+
+
+## 🚀 Loading and Using Models
+
+After training, you can load and use ASIDE models for inference. Here's how to set up and run the model:
+
+### Basic Usage
+```python
+import torch
+import deepspeed
+import json
+from model_api import CustomModelHandler  # Import your custom handler
+from model import format_prompt  # Import your prompt formatting function
+
+# Define your instruction and data
+instruction_text = "Translate to German."
+data_text = "What is a sum of 3 and 5? Where was Gustav Klimt born?"
+
+# Model configuration
+embedding_type = "forward_rot"  # or "single_emb", "ise"
+base_model =  "Qwen/Qwen2.5-7B" #or "meta-llama/Llama-3.1-8B"  #others
+model_path = "path_to_your_model"
+
+# Initialize the model handler
+handler = CustomModelHandler(
+    model_path, 
+    base_model, 
+    base_model, 
+    model_path, 
+    None,
+    0, 
+    embedding_type=embedding_type, 
+    load_from_checkpoint=True
+)
+
+# Initialize DeepSpeed inference engine
+engine = deepspeed.init_inference(
+    model=handler.model,
+    mp_size=torch.cuda.device_count(),  # Number of GPUs
+    dtype=torch.float16,
+    replace_method='auto',
+    replace_with_kernel_inject=False
+)
+handler.model = engine.module
+
+# Load prompt templates
+with open("./data/prompt_templates.json", "r") as f:
+    templates = json.load(f)
+
+template = templates[0]  
+instruction_text = format_prompt(instruction_text, template, "system")
+data_text = format_prompt(data_text, template, "user")
+
+# Generate output
+output, inp = handler.call_model_api(instruction_text, data_text)
+print(output)
+```
 
 ## 🔧 Advanced Usage
 
