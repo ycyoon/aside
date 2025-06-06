@@ -21,9 +21,19 @@ git clone https://github.com/egozverev/aside.git
 cd aside
 
 # Create environment (Python 3.9-3.12)
-python -m venv .venv
+virtualenv .venv
 source .venv/bin/activate  
+pip install --upgrade pip
 pip install -r requirements.txt
+```
+
+When running training: 
+
+```bash
+module load python/3.12.8
+module load cuda/12.4
+source .venv/bin/activate  
+
 ```
 
 ### Training ASIDE
@@ -100,13 +110,16 @@ Please see `experiments/interp/README.md` for a dedicated step-by-step guide on 
 
 ## 🚀 Loading and Using Models
 
-After training, you can load and use ASIDE models for inference. Here's how to set up and run the model:
+After training, you can load and use ASIDE models for inference. Here's how to set up and run the model. For instance, if the following script is saved as `experiments/example.py`, run `deepspeed --num_gpus=1 experiments/example.py`.
 
 ### Basic Usage
 ```python
 import torch
 import deepspeed
 import json
+import os
+from huggingface_hub import login
+
 from model_api import CustomModelHandler  # Import your custom handler
 from model import format_prompt  # Import your prompt formatting function
 
@@ -114,9 +127,14 @@ from model import format_prompt  # Import your prompt formatting function
 instruction_text = "Translate to German."
 data_text = "What is a sum of 3 and 5? Where was Gustav Klimt born?"
 
+#Hugging face login
+
+hf_token = os.environ["HUGGINGFACE_HUB_TOKEN"]
+login(token=hf_token)
+
 # Model configuration
 embedding_type = "forward_rot"  # or "single_emb", "ise"
-base_model =  "Qwen/Qwen2.5-7B" #or "meta-llama/Llama-3.1-8B"  #others
+base_model =  "Qwen/Qwen2.5-7B" #or "meta-llama/Llama-3.1-8B", or others
 model_path = "path_to_your_model"
 
 # Initialize the model handler
