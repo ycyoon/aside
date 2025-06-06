@@ -1276,31 +1276,31 @@ class CustomModelHandler:
         attention_mask_batch = torch.cat(padded_attention_masks, dim=0).to(
             self.model.device
         )
-        if not self.debug_printed:
-            self.debug_printed = True
-            print("sys instr", system_instructions[0])
-            print("user instr", user_instructions[0])
-            print("INPUT IDS BATCH\n", input_ids_batch[0])
-            if segment_ids_batch is not None:
-                print("SEGMENT IDS BATCH", segment_ids_batch[0])
-            print("ATTN BATCH", attention_mask_batch[0])
+        # if not self.debug_printed:
+        #     self.debug_printed = True
+        #     print("sys instr", system_instructions[0])
+        #     print("user instr", user_instructions[0])
+        #     print("INPUT IDS BATCH\n", input_ids_batch[0])
+        #     if segment_ids_batch is not None:
+        #         print("SEGMENT IDS BATCH", segment_ids_batch[0])
+        #     print("ATTN BATCH", attention_mask_batch[0])
 
-            print("=== DeepSpeed Engine Debug Info ===")
+        #     print("=== DeepSpeed Engine Debug Info ===")
 
-            some_param = next(self.model.parameters())
-            device = some_param.device
-            input_ids_batch = input_ids_batch.to(device)
-            attention_mask_batch = attention_mask_batch.to(device)
-            print("Sample param dtype:", some_param.dtype)
-            print("Sample param device:", some_param.device)
-            print("input_ids dtype:", input_ids_batch.dtype)
-            print("input_ids device:", input_ids_batch.device)
-            print("attention_mask dtype:", attention_mask_batch.dtype)
-            print("attention_mask device:", attention_mask_batch.device)
+        #     some_param = next(self.model.parameters())
+        #     device = some_param.device
+        #     input_ids_batch = input_ids_batch.to(device)
+        #     attention_mask_batch = attention_mask_batch.to(device)
+        #     print("Sample param dtype:", some_param.dtype)
+        #     print("Sample param device:", some_param.device)
+        #     print("input_ids dtype:", input_ids_batch.dtype)
+        #     print("input_ids device:", input_ids_batch.device)
+        #     print("attention_mask dtype:", attention_mask_batch.dtype)
+        #     print("attention_mask device:", attention_mask_batch.device)
 
-            print(
-                f"Shapes, L710: {input_ids_batch.shape, attention_mask_batch.shape, segment_ids_batch.shape if segment_ids_batch is not None else None}"
-            )
+        #     print(
+        #         f"Shapes, L710: {input_ids_batch.shape, attention_mask_batch.shape, segment_ids_batch.shape if segment_ids_batch is not None else None}"
+        #     )
         start_time = time.time()
 
         with torch.no_grad():

@@ -33,7 +33,6 @@ When running training:
 module load python/3.12.8
 module load cuda/12.4
 source .venv/bin/activate  
-
 ```
 
 ### Training ASIDE
@@ -121,20 +120,17 @@ import os
 from huggingface_hub import login
 
 from model_api import CustomModelHandler  # Import your custom handler
-from model import format_prompt  # Import your prompt formatting function
+from model_api import format_prompt  # Import your prompt formatting function
 
 # Define your instruction and data
 instruction_text = "Translate to German."
-data_text = "What is a sum of 3 and 5? Where was Gustav Klimt born?"
-
-#Hugging face login
-
-hf_token = os.environ["HUGGINGFACE_HUB_TOKEN"]
-login(token=hf_token)
+data_text = "Who is Albert Einstein?"
 
 # Model configuration
+hf_token = os.environ["HUGGINGFACE_HUB_TOKEN"]
+login(token=hf_token)
 embedding_type = "forward_rot"  # or "single_emb", "ise"
-base_model =  "Qwen/Qwen2.5-7B" #or "meta-llama/Llama-3.1-8B", or others
+base_model =  "Qwen/Qwen2.5-7B" #or "meta-llama/Llama-3.1-8B"  #others
 model_path = "path_to_your_model"
 
 # Initialize the model handler
@@ -168,7 +164,7 @@ instruction_text = format_prompt(instruction_text, template, "system")
 data_text = format_prompt(data_text, template, "user")
 
 # Generate output
-output, inp = handler.call_model_api(instruction_text, data_text)
+output, inp = handler.call_model_api_batch([instruction_text], [data_text])
 print(output)
 ```
 
