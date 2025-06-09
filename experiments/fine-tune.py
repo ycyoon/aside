@@ -75,7 +75,8 @@ def merge_zero_shards_and_save(checkpoint_dir):
         
     """
     convert_zero_checkpoint_to_fp32_state_dict(
-        checkpoint_dir
+        checkpoint_dir=checkpoint_dir,
+        output_dir=checkpoint_dir,
     )
 
     print(f"Saved merged FP32 checkpoint to {checkpoint_dir}")
