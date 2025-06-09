@@ -15,6 +15,16 @@
 
 ## ⚡ Quick Start
 
+### Requirements
+- CUDA Toolkit 12.4
+- Python 3.12
+
+If your system uses Environment Modules you can satisfy the requirements like this:
+```bash
+module load python/3.12.8
+module load cuda/12.4
+```
+
 ### Installation
 ```bash
 git clone https://github.com/egozverev/aside.git
@@ -25,9 +35,10 @@ virtualenv .venv
 source .venv/bin/activate  
 pip install --upgrade pip
 pip install -r requirements.txt
+pip install flash-attn==2.7.4.post1 --no-build-isolation
 ```
 
-When running training: 
+Don't forget to activate modules and the venv every time you run training: 
 
 ```bash
 module load python/3.12.8
