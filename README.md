@@ -49,6 +49,9 @@ source .venv/bin/activate
 
 ### Training ASIDE
 ```bash
+cd experiments
+```
+```bash
 # Quick start: Train Qwen 2.5 7B with ASIDE
 deepspeed --num_gpus=8 fine-tune.py \
 --model_family qwen2.5_7b \
