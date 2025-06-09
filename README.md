@@ -86,7 +86,7 @@ deepspeed --num_gpus=8 fine-tune.py \
 1. **SEP Evaluation** - Instruction-data separation
    ```bash
    cd experiments/evaluations/SEP
-   torchrun --nproc_per_node=1 --master_port=29706 get_model_outputs.py forward_rot qwen2.5_7b 1 SFTv70 forward_rot 15
+   torchrun --nproc_per_node=1 --master_port=29706 get_model_outputs.py forward_rot Qwen2.5-7B 0 SFTv70 forward_rot ASIDE
    ```
 
 2. **AlpacaEval** - General utility
@@ -94,15 +94,15 @@ deepspeed --num_gpus=8 fine-tune.py \
    pip install -U alpaca_eval
    cd experiments/evaluations/AlpacaEval
 
-   torchrun --nproc_per_node=1 --master_port=29712 get_alpaca_outputs.py --data-path data/tatsu-lab/alpaca_farm/eval.json --use-input True--model ../models/qwen2.5_7b/forward_rot/train_checkpoints/SFTv70/from_base_run_15/last/ --embedding-type forward_rot --batch-size 32
+   torchrun --nproc_per_node=1 --master_port=29712 get_alpaca_outputs.py --data-path ../../data/tatsu-lab/alpaca_farm/eval.json --use-input True --model ../../models/Qwen2.5-7B/forward_rot/train_checkpoints/SFTv70/from_inst_run_ASIDE/last/ --embedding-type forward_rot --batch-size 32
 
-   IS_ALPACA_EVAL_2=False alpaca_eval --model_outputs ./data/tatsu-lab/alpaca_farm/qwen2.5_7b_forward_rot_train_checkpoints_SFTv70_from_base_run_15_last__l-1_s42.json
+   IS_ALPACA_EVAL_2=False alpaca_eval --model_outputs ../../data/tatsu-lab/alpaca_farm/Qwen2.5-7B_forward_rot_train_checkpoints_SFTv70_from_inst_run_ASIDE_last__l-1_s42.json
    ```
 
 3. **Structured Queries** 
    ```bash
    cd experiments/evaluations/struq
-   torchrun --nproc_per_node=1 --master_port=29718 test_on_struq.py --domain all --attack all --model ../models/qwen2.5_7b/forward_rot/train_checkpoints/SFTv70/from_base_run_15/last/ --embedding_type forward_rot --batch_size 32
+   torchrun --nproc_per_node=1 --master_port=29718 test_on_struq.py --domain all --attack all --model ../../models/Qwen2.5-7B/forward_rot/train_checkpoints/SFTv70/from_inst_run_ASIDE/last/ --embedding_type forward_rot --batch_size 32
    ```
 
 4. **BIPIA**

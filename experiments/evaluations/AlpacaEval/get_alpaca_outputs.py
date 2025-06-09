@@ -23,8 +23,8 @@ Usage:
 import sys
 import os
 
-if ".." not in sys.path:
-    sys.path.append("..")
+if "../.." not in sys.path:
+    sys.path.append("../..")
 
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 
@@ -230,7 +230,7 @@ def get_model_outputs(data_path, data_size, use_input, remove_tags, model_name, 
     handler.model.to(device)
     handler.model.config.use_cache = True
 
-    with open("../data/prompt_templates.json", "r") as f:
+    with open("../../data/prompt_templates.json", "r") as f:
         templates = json.load(f)
     template = templates[0]
 
@@ -239,7 +239,8 @@ def get_model_outputs(data_path, data_size, use_input, remove_tags, model_name, 
 
     # Get parent dir of data_path
     #short_model_name = model_name.split("/")[-1]
-    short_model_name = model_name.replace("/", "_")[len(".._models_"):]
+    model_name = model_name.split("models/")[1]
+    short_model_name = model_name.replace("/", "_")
     save_filename = f"{short_model_name}_l{data_size}_s{seed}.json"
     save_path = os.path.join(save_dir, save_filename)
     # Make sure the directory exists

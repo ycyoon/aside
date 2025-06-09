@@ -1661,6 +1661,7 @@ def inference(
     handler: CustomModelHandler,
     save_step: int = 2,
     batch_size: int = 8,  # <--- new!
+    mp_size: Optional[int] = None,
 ) -> None:
     
     """
@@ -1710,7 +1711,7 @@ def inference(
 
     engine = deepspeed.init_inference(
         model=handler.model,
-        mp_size=torch.cuda.device_count(),  # e.g., 2 or 4 # SHOULD BE cuda num of devices
+        mp_size=torch.cuda.device_count() if mp_size is None else mp_size,  # e.g., 2 or 4 # SHOULD BE cuda num of devices
         dtype=torch.bfloat16,  # or another precision
         replace_method="auto",
         replace_with_kernel_inject=False,  # False

@@ -27,6 +27,9 @@ References:
 import os.path
 import sys
 
+if "../.." not in sys.path:
+    sys.path.append("../..")
+
 from model_api import *
 import torch
 import torch.multiprocessing as mp
@@ -61,8 +64,8 @@ def main(checkpoint_path: str, embedding_type: str, output_file_path:str, tokeni
         end_ix (int, optional): Ending dataset index for evaluation (default: 8000)
         
     Note:
-        - Uses SEP dataset from "./data/SEP_dataset.json"
-        - Prompt templates from "./data/prompt_templates.json"
+        - Uses SEP dataset from "../../data/SEP_dataset.json"
+        - Prompt templates from "../../data/prompt_templates.json"
         - Batch size is set to 32 for efficiency
         
     The generated outputs follow the SEP evaluation protocol where models are prompted
@@ -86,7 +89,7 @@ def main(checkpoint_path: str, embedding_type: str, output_file_path:str, tokeni
         raise Exception("Prompt index interval is empty")
 
     for p_ix in range(prompt_ix, prompt_ix_end):
-        dataset, prompt_template = load_data("./data/SEP_dataset.json", "./data/prompt_templates.json", p_ix)
+        dataset, prompt_template = load_data("../../data/SEP_dataset.json", "../../data/prompt_templates.json", p_ix)
         if start_ix is None:
             start_ix = 0
         if end_ix is None:
@@ -100,7 +103,7 @@ def main(checkpoint_path: str, embedding_type: str, output_file_path:str, tokeni
         print(f"Starting inference for model {checkpoint_path} on prompt index {p_ix}. \
               Dataset slice is dataset[{start_ix}:{end_ix}]")
         
-        inference(dataset, output_file_path, template_info, handler, batch_size=batch_size)
+        inference(dataset, output_file_path, template_info, handler, batch_size=batch_size, mp_size=1)
 
         print(f"Inference complete. Results saved to {output_file_path}")
 
@@ -273,11 +276,11 @@ if __name__ == "__main__":
     
     if embedding_type == "double_emb":
         checkpoint_path = (
-            f"./models/{model_family}/{model}/train_checkpoints/"
+            f"../../models/{model_family}/{model}/train_checkpoints/"
             f"{train_v}/{model_type}_run_{run_n}/last"
         )
         output_file_path = (
-            f"./model_outputs/{model_family}/{train_v}/"
+            f"../../model_outputs/{model_family}/{train_v}/"
             f"{model}_{model_type}_run{run_n}_fullsep.json"
         )
         
@@ -287,11 +290,11 @@ if __name__ == "__main__":
          tokenizer_path) = get_double_emb_paths(model_family)
     elif embedding_type in ("ise", "forward_rot"):
         checkpoint_path = (
-            f"./models/{model_family}/{model}/train_checkpoints/"
+            f"../../models/{model_family}/{model}/train_checkpoints/"
             f"{train_v}/{model_type}_run_{run_n}/last"
         )
         output_file_path = (
-            f"./model_outputs/{model_family}/{train_v}/"
+            f"../../model_outputs/{model_family}/{train_v}/"
             f"{model}_{model_type}_run{run_n}_fullsep.json"
         )
         
@@ -311,11 +314,11 @@ if __name__ == "__main__":
         else:
             # Otherwise, fallback to a standard checkpoint path
             checkpoint_path = (
-                f"./models/{model_family}/{model}/train_checkpoints/"
+                f"../../models/{model_family}/{model}/train_checkpoints/"
                 f"{train_v}/{model_type}_run_{run_n}/last"
             )
             output_file_path = (
-                f"./model_outputs/{model_family}/{train_v}/"
+                f"../../model_outputs/{model_family}/{train_v}/"
                 f"{model_type}_{model}_run{run_n}_fullsep.json"
             )
             

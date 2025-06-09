@@ -27,8 +27,8 @@ Usage:
 import sys
 import os
 
-if ".." not in sys.path:
-    sys.path.append("..")
+if "../.." not in sys.path:
+    sys.path.append("../..")
 
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 
@@ -407,10 +407,6 @@ def test_model_on_struq(data_path, domain, attack, model_name, embedding_type, b
     with open(data_path, "r") as f:
         data = json.load(f)
     
-    # Set numpy and torch seeds
-    torch.manual_seed(seed)
-    np.random.seed(seed)
-
     print(f"Loading the model to CPU")
     if embedding_type == "double_emb":
         AutoConfig.register("custom_llama", CustomLlamaConfig)
@@ -423,13 +419,13 @@ def test_model_on_struq(data_path, domain, attack, model_name, embedding_type, b
     print(f"Moving the model to {device}")
     handler.model.to(device)
 
-    with open("../data/prompt_templates.json", "r") as f:
+    with open("../../data/prompt_templates.json", "r") as f:
         templates = json.load(f)
     template = templates[0]
 
     domains = DOMAIN_TYPES if domain == "all" else [domain]
     attacks = ATTACK_TYPES if attack == "all" else [attack] 
-    results = {domain: {attack: None for attack in attacks} for domain in domains}
+    results = {domain: {attack: [] for attack in attacks} for domain in domains}
     for seed in seed_list:
         print(f"\nRunning evaluation with seed {seed}")
         torch.manual_seed(seed)
@@ -534,7 +530,7 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    data_path = "../data/tatsu-lab/alpaca_farm/eval.json"
+    data_path = "../../data/tatsu-lab/alpaca_farm/eval.json"
     seed_list = [42, 43, 44]
 
     if args.save_dir == "":
