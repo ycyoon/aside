@@ -35,6 +35,7 @@ virtualenv .venv
 source .venv/bin/activate  
 pip install --upgrade pip
 pip install -r requirements.txt
+# This needs to be installed separately, after torch and psutil
 pip install flash-attn==2.7.4.post1 --no-build-isolation
 ```
 
