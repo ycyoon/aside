@@ -106,9 +106,21 @@ deepspeed --num_gpus=8 fine-tune.py \
    ```
 
 4. **BIPIA**
-TBD
+  (Only subset with programmatic evaluation, i.e., does not require OpenAI models for evaluation)
+   ```bash
+   cd experiments/evaluations/safety_evals
+   python test_safety.py --model_name ../../models/Qwen2.5-7B/forward_rot/train_checkpoints/SFTv70/from_inst_run_ASIDE/last/ --embedding_type forward_rot --base_model Qwen/Qwen2.5-7B --datasets bipia --batch_size 32
+   ```
+
 5. **Other safety benchmarks**
-TBD
+   ```bash
+   cd experiments/evaluations/safety_evals
+   # Run all safety benchmarks (including BIPIA)
+   python test_safety.py --model_name ../../models/Qwen2.5-7B/forward_rot/train_checkpoints/SFTv70/from_inst_run_ASIDE/last/ --embedding_type forward_rot --base_model Qwen/Qwen2.5-7B --datasets all --batch_size 32
+   
+   # Or run specific benchmarks
+   python test_safety.py --model_name ../../models/Qwen2.5-7B/forward_rot/train_checkpoints/SFTv70/from_inst_run_ASIDE/last/ --embedding_type forward_rot --base_model Qwen/Qwen2.5-7B --datasets purple gandalf --batch_size 32
+   ```
 
 
 See `experiments/evaluations/README.md` for more details. 
