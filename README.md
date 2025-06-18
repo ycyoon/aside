@@ -1,5 +1,4 @@
 # ASIDE: Architecturally Separated Instruction-Data Embeddings
-### This repo is under development, to be finished by June 13
 
 
 [![Paper](https://img.shields.io/badge/Paper-arXiv-red.svg)](https://arxiv.org/abs/2503.10566)
@@ -57,7 +56,7 @@ deepspeed --num_gpus=8 fine-tune.py \
 --model_ix 0 \
 --run_number ASIDE \
 --train_type full \
---num_train_epochs 3 \
+--num_train_epochs 2 \
 --per_device_train_batch_size 4 \
 --gradient_accumulation_steps 8 \
 --learning_rate 2e-5 \
