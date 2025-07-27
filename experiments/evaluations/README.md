@@ -1,4 +1,3 @@
-# Repo under development, to be finished by June 6
 
 # AlpacaEval
 
