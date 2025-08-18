@@ -109,7 +109,7 @@ def texts_to_prepared_ids(
             break
 
 
-    if model_type == "single_emb":
+    if model_type in ("single_emb", "rgtnet", "rgtnet_orthonly"):
         assert len(text_sequences) == 1
         input_ids, attention_mask = (
             tokenized_seq[0]["input_ids"],
@@ -983,6 +983,20 @@ def texts_to_prepared_ids(
                 for ts in token_sequences
             ]
         )
+    elif model_type in ("rgtnet", "rgtnet_orthonly"):
+        # RGTNet: concatenate instruction + user sequences like ASIDE but no segment_ids
+        token_sequences = [
+            (tokenized_seq[i]["input_ids"], text_sequences[i][1])
+            for i in range(len(tokenized_seq))
+        ]
+        input_ids = torch.hstack(
+            [tokenized_seq[i]["input_ids"] for i in range(len(tokenized_seq))]
+        )
+        # Skip BOS replacement (single row tensor after hstack)
+        attention_mask = torch.hstack(
+            [tokenized_seq[i]["attention_mask"] for i in range(len(tokenized_seq))]
+        )
+        segment_ids = None
     else:
         raise NotImplementedError(f"Not implemented for model type {model_type}")
 

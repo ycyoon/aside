@@ -1,0 +1,10 @@
+Model: models/rgtnet_qwen2.5-7b_20250814_0759/merged_epoch_1/
+Embedding Type: rgtnet_orthonly
+Metrics:
+  TensorTrust: mean=44.24%, std=0.00%
+  purple: mean=68.77%, std=0.00%
+  gandalf: mean=0.71%, std=0.00%
+  rules: mean=74.74%, std=0.00%
+  hackerprompt: mean=0.00%, std=0.00%
+  bipia-text: mean=0.65%, std=0.00%
+  bipia-code: mean=3.78%, std=0.00%

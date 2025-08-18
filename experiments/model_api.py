@@ -51,7 +51,66 @@ import deepspeed
 from deepspeed.utils.zero_to_fp32 import load_state_dict_from_zero_checkpoint
 
 from model import *
+# RGTNet custom architecture
+try:
+    from rgtnet_model import RoleAwareTransformerDecoder
+    from hf_merged_loader import load_with_merged_mapping, looks_like_merged_wrapper
+except ImportError:
+    RoleAwareTransformerDecoder = None
+    load_with_merged_mapping = None
+    looks_like_merged_wrapper = None  # Will raise later if used
 
+
+def load_rgtnet_model_and_tokenizer(
+    checkpoint_path: str,
+    tokenizer_path: str,
+    model_dtype: torch.dtype,
+    device: Optional[str] = None,
+):
+    """Load RGTNet model with unified wrapper/native support."""
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    
+    if looks_like_merged_wrapper and looks_like_merged_wrapper(checkpoint_path):
+        print("[RGTNet] Wrapper-style checkpoint detected; using merged mapping loader.")
+        model = load_with_merged_mapping(checkpoint_path, device=device)
+        setattr(model, "is_native_rgtnet", False)
+        return model.to(dtype=model_dtype), tokenizer
+    
+    # Native RGTNet path
+    print("[RGTNet] Loading native RGTNet checkpoint.")
+    state_dict = torch.load(
+        os.path.join(checkpoint_path, "pytorch_model.bin"), 
+        map_location="cpu"
+    )
+    
+    # Fixed defaults for sizing (could read from config in future)
+    d_model = 4096
+    nhead = 32
+    num_layers = 32
+    dim_ff = 11008
+    max_seq_len = 8192
+    
+    model = RoleAwareTransformerDecoder(
+        vocab_size=len(tokenizer),
+        d_model=d_model,
+        nhead=nhead,
+        num_layers=num_layers,
+        dim_feedforward=dim_ff,
+        pad_idx=tokenizer.pad_token_id,
+        max_seq_len=max_seq_len,
+        pretrained_model_name=None,
+    )
+    
+    missing, unexpected = model.load_state_dict(state_dict, strict=False)
+    print(f"[RGTNet] Loaded native checkpoint. Missing={len(missing)} Unexpected={len(unexpected)}")
+    if len(missing) > 0:
+        print(f"[FATAL] Missing keys in RGTNet model: {missing[:5]}...")
+        sys.exit(1)
+        
+    setattr(model, "is_native_rgtnet", True)
+    return model.to(device=device, dtype=model_dtype), tokenizer
 
 
 def load_single_emb_model_and_tokenizer(
@@ -270,8 +329,8 @@ class CustomModelHandler:
             rank (int, optional): Distributed training rank
             post_init_rotation (bool): Apply rotation after initialization
         """
-        assert embedding_type in ("single_emb", "double_emb", "ise", "forward_rot")
-        if embedding_type == "single_emb":
+        assert embedding_type in ("single_emb", "double_emb", "ise", "forward_rot", "rgtnet", "rgtnet_orthonly")
+        if embedding_type in ("single_emb", "rgtnet", "rgtnet_orthonly"):
             self.split_chat = False
         else:
             self.split_chat = True
@@ -1302,9 +1361,81 @@ class CustomModelHandler:
         #         f"Shapes, L710: {input_ids_batch.shape, attention_mask_batch.shape, segment_ids_batch.shape if segment_ids_batch is not None else None}"
         #     )
         start_time = time.time()
+        timing_enabled = os.environ.get("RGTNET_TIMING", "0") == "1"
+        prep_time = 0.0
+        if timing_enabled:
+            prep_start = time.time()
+            print(f"[TIMING] Starting generation for batch_size={batch_size}, max_new_tokens={max_new_tokens}")
 
         with torch.no_grad():
-            if self.embedding_type == "single_emb":
+            if self.embedding_type in ("rgtnet", "rgtnet_orthonly"):
+                native = getattr(self, "is_native_rgtnet", False)
+                if timing_enabled:
+                    print(f"[TIMING] RGTNet path: native={native}")
+                if not native:
+                    # Wrapper fast path using HF generation (KV cache, batched)
+                    if timing_enabled:
+                        print(f"[TIMING] Using HF generate fast path")
+                    output_sequences = self.model.generate(
+                        input_ids=input_ids_batch,
+                        attention_mask=attention_mask_batch,
+                        max_new_tokens=max_new_tokens,
+                        do_sample=do_sample,
+                        temperature=temperature,
+                        use_cache=True,
+                        pad_token_id=self.tokenizer.pad_token_id,
+                        eos_token_id=[self.tokenizer.eos_token_id, 128009],
+                        bos_token_id=self.tokenizer.bos_token_id,
+                    )
+                else:
+                    # Native manual loop for true RGTNet
+                    if timing_enabled:
+                        print(f"[TIMING] Using native manual loop (SLOW PATH)")
+                    output_rows = []
+                    eos_id = getattr(self.tokenizer, "eos_token_id", None)
+                    target_len = max_seq_len + max_new_tokens
+                    for bi in range(batch_size):
+                        full_padded = input_ids_batch[bi : bi + 1]
+                        seq_len = input_lengths[bi]
+                        seq = full_padded[:, -seq_len:].clone()
+                        role_mask = torch.zeros_like(seq)
+                        steps = 0
+                        finished = False
+                        while steps < max_new_tokens and not finished:
+                            out = self.model(seq, role_mask=role_mask)
+                            logits = out["logits"][:, -1, :]
+                            next_logits = logits / (temperature if (do_sample and temperature) else 1.0)
+                            if do_sample:
+                                probs = torch.softmax(next_logits, dim=-1)
+                                next_token = torch.multinomial(probs, num_samples=1)
+                            else:
+                                next_token = torch.argmax(next_logits, dim=-1, keepdim=True)
+                            seq = torch.cat([seq, next_token], dim=1)
+                            role_mask = torch.cat(
+                                [role_mask, torch.ones((1, 1), dtype=role_mask.dtype, device=role_mask.device)],
+                                dim=1,
+                            )
+                            steps += 1
+                            if eos_id is not None and (next_token == eos_id).all():
+                                finished = True
+                        left_pad_width = max_seq_len - seq_len
+                        if left_pad_width > 0:
+                            left_pad = full_padded[:, :left_pad_width]
+                            seq_extended = torch.cat([left_pad, seq], dim=1)
+                        else:
+                            seq_extended = seq
+                        final_len = seq_extended.size(1)
+                        if final_len < target_len:
+                            pad_extra = torch.full(
+                                (1, target_len - final_len),
+                                self.tokenizer.pad_token_id,
+                                dtype=seq_extended.dtype,
+                                device=seq_extended.device,
+                            )
+                            seq_extended = torch.cat([seq_extended, pad_extra], dim=1)
+                        output_rows.append(seq_extended)
+                    output_sequences = torch.cat(output_rows, dim=0)
+            elif self.embedding_type == "single_emb":
                 output_sequences = self.model.generate(
                     input_ids=input_ids_batch,
                     attention_mask=attention_mask_batch,
@@ -1335,7 +1466,10 @@ class CustomModelHandler:
                 )
 
         end_time = time.time()
-        print(f"Generation time: {end_time - start_time:.6f} seconds")
+        gen_time = end_time - start_time
+        print(f"Generation time: {gen_time:.6f} seconds")
+        if timing_enabled:
+            decode_start = time.time()
         # --------------------------------------------------------------------
         # Decode each example's output
         # --------------------------------------------------------------------
@@ -1357,6 +1491,11 @@ class CustomModelHandler:
             )
             responses.append(generated_text)
 
+        if timing_enabled:
+            decode_time = time.time() - decode_start
+            total_time = time.time() - prep_start
+            print(f"[TIMING] prep={prep_time:.3f}s gen={gen_time:.3f}s decode={decode_time:.3f}s total={total_time:.3f}s")
+
         return responses, model_inputs_for_logging
 
     def _setup_hf_model(self) -> None:
@@ -1375,11 +1514,24 @@ class CustomModelHandler:
         - Llama + (single_emb, double_emb, ise, forward_rot)
         - Qwen + (single_emb, ise, forward_rot)  
         - Mistral + (single_emb, ise, forward_rot)
+        - RGTNet + (rgtnet, rgtnet_orthonly)
         
         Note:
             Double embedding is only supported for Llama models and is deprecated.
             New experiments should use forward_rot (ASIDE) or ise baselines.
         """
+
+        if self.embedding_type in ("rgtnet", "rgtnet_orthonly"):
+            self.model, self.tokenizer = load_rgtnet_model_and_tokenizer(
+                self.checkpoint_path,
+                self.tokenizer_path,
+                self.model_dtype,
+                device=self.device,
+            )
+            self.is_native_rgtnet = getattr(self.model, "is_native_rgtnet", False)
+            print(f"chat_template_path: {self.chat_template_path}")
+            print("\n MODEL TYPE: ", type(self.model))
+            return
 
         CONFIG_CLASS_REGISTRY = {
             "llama": CustomLlamaConfig,

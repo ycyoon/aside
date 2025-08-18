@@ -1,11 +1,21 @@
-import sys
+import os, sys
 
-sys.path.append("BIPIA")
+sys.path.append(".")
+sys.path.append('/home/ycyoon/work/aside/experiments/evaluations')
+
+
+try:
+    from BIPIA.bipia.data import AutoPIABuilder
+    HAS_BIPIA = True
+except Exception:
+    sys.exit(1)
+
 import json
 import os
 import random
 from functools import partial
 from pathlib import Path
+from datetime import datetime
 
 import jsonlines
 import numpy as np
@@ -18,12 +28,11 @@ from huggingface_hub import login
 from tqdm import tqdm
 from transformers import AutoConfig, AutoModelForCausalLM
 
-from BIPIA.bipia.data import AutoPIABuilder
 from BIPIA.bipia.metrics import BipiaEvalFactory
 from model import *
 from model_api import *
 from model_api import CustomModelHandler, format_prompt, load_config
-from safety_evals import rules
+import rules
 
 # Set CUDA devices
 os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3,4,5,6,7"
@@ -107,7 +116,7 @@ def download_gandalf_data():
                 dataset["test"],
             ]
         )
-        full_dataset.save_to_disk(cache_file)
+        full_dataset.save_to_disk(str(cache_file))
         print("Gandalf dataset preprocessed and cached.")
     return load_from_disk(str(cache_file))
 
@@ -176,18 +185,18 @@ def evaluate_scenario(
     attack="text",
 ):
     if attack == "text":
-        attack_path = "BIPIA/benchmark/text_attack_test.json"
+        attack_path = "/home/ycyoon/work/aside/experiments/evaluations/BIPIA/benchmark/text_attack_test.json"
     elif attack == "code":
-        attack_path = "BIPIA/benchmark/code_attack_test.json"
+        attack_path = "/home/ycyoon/work/aside/experiments/evaluations/BIPIA/benchmark/code_attack_test.json"
     else:
         raise ValueError(f"Invalid attack type: {attack}")
 
     scenario_to_path = {
-        "email": "BIPIA/benchmark/email/test.jsonl",
-        "code": "BIPIA/benchmark/code/test.jsonl",
-        "qa": "BIPIA/benchmark/qa/test.jsonl",
-        "abstract": "BIPIA/benchmark/abstract/test.jsonl",
-        "table": "BIPIA/benchmark/table/test.jsonl",
+        "email": "/home/ycyoon/work/aside/experiments/evaluations/BIPIA/benchmark/email/test.jsonl",
+        "code": "/home/ycyoon/work/aside/experiments/evaluations/BIPIA/benchmark/code/test.jsonl",
+        "qa": "/home/ycyoon/work/aside/experiments/evaluations/BIPIA/benchmark/qa/test.jsonl",
+        "abstract": "/home/ycyoon/work/aside/experiments/evaluations/BIPIA/benchmark/abstract/test.jsonl",
+        "table": "/home/ycyoon/work/aside/experiments/evaluations/BIPIA/benchmark/table/test.jsonl",
     }
     pia_builder = AutoPIABuilder.from_name(scenario_name)(seed)
     pia_samples = pia_builder(
@@ -626,6 +635,10 @@ def main(args):
     else:
         print("Using single processing mode")
 
+    # Prepare output directory
+    output_dir = Path(args.output_dir) if hasattr(args, "output_dir") and args.output_dir else Path("./eval_logs")
+    output_dir.mkdir(parents=True, exist_ok=True)
+
     AutoConfig.register("custom_llama", CustomLlamaConfig)
     AutoModelForCausalLM.register(CustomLlamaConfig, CustomLLaMA)
 
@@ -761,10 +774,44 @@ def main(args):
             f"{key.capitalize()} - Mean: {value['mean']:.2f}%, Std: {value['std']:.2f}%"
         )
 
-    output_file = f"{args.model_name.replace('/', '_')}_metrics.json"
+    # Save metrics JSON inside specified output directory
+    output_file = output_dir / f"{args.model_name.replace('/', '_')}_metrics.json"
     with open(output_file, "w") as f:
         json.dump(metrics, f, indent=4)
     print(f"Metrics saved to {output_file}")
+
+    # Save a human-readable summary log with timestamped filename & hyperparameters
+    run_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    model_safe = args.model_name.replace('/', '_')
+    summary_filename = f"evaluation_summary_{model_safe}_{args.embedding_type}_{run_ts}.txt"
+    summary_path = output_dir / summary_filename
+
+    # Collect hyperparameters / args
+    hyperparams = {
+        "model_name": args.model_name,
+        "base_model": args.base_model,
+        "embedding_type": args.embedding_type,
+        "datasets": args.datasets,
+        "seeds_to_run": args.seeds_to_run,
+        "do_sample": bool(args.do_sample),
+        "batch_size": args.batch_size,
+        "use_deepspeed": bool(args.use_deepspeed),
+        "output_dir": str(output_dir.resolve()),
+        "timestamp": run_ts,
+    }
+
+    summary_lines = ["=== Evaluation Summary ===",]
+    summary_lines.append("# Hyperparameters / Run Config")
+    for k, v in hyperparams.items():
+        summary_lines.append(f"{k}: {v}")
+    summary_lines.append("")
+    summary_lines.append("# Metrics (%):")
+    for key, value in metrics.items():
+        summary_lines.append(f"{key}: mean={value['mean']:.2f}, std={value['std']:.2f}")
+
+    with open(summary_path, "w") as f:
+        f.write("\n".join(summary_lines) + "\n")
+    print(f"Summary log saved to {summary_path}")
 
     return metrics
 
@@ -783,7 +830,7 @@ if __name__ == "__main__":
         help="Embedding type (single_emb or double_emb)",
     )
     parser.add_argument(
-        "--base_model", type=str, required=True, help="Name of the model"
+        "--base_model", type=str, required=False, help="Name of the model"
     )
     parser.add_argument(
         "--datasets",
@@ -826,6 +873,12 @@ if __name__ == "__main__":
         type=int,
         default=1,
         help="Batch size for model inference (1 for single calls, >1 for batch processing)",
+    )
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        default="./eval_logs",
+        help="Directory to save evaluation logs and metrics JSON",
     )
 
     args = parser.parse_args()

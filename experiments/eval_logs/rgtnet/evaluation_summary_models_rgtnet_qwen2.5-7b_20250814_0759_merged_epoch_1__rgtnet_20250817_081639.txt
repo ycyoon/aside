@@ -1,0 +1,21 @@
+=== Evaluation Summary ===
+# Hyperparameters / Run Config
+model_name: models/rgtnet_qwen2.5-7b_20250814_0759/merged_epoch_1/
+base_model: None
+embedding_type: rgtnet
+datasets: ['all']
+seeds_to_run: 1
+do_sample: True
+batch_size: 32
+use_deepspeed: False
+output_dir: /ceph_data/ycyoon/work/aside/experiments/eval_logs/rgtnet
+timestamp: 20250817_081639
+
+# Metrics (%):
+TensorTrust: mean=44.24, std=0.00
+purple: mean=68.77, std=0.00
+gandalf: mean=0.71, std=0.00
+rules: mean=74.74, std=0.00
+hackerprompt: mean=0.00, std=0.00
+bipia-text: mean=0.65, std=0.00
+bipia-code: mean=3.78, std=0.00
