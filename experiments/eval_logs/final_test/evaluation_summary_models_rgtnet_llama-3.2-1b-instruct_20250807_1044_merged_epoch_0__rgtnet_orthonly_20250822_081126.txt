@@ -1,0 +1,15 @@
+=== Evaluation Summary ===
+# Hyperparameters / Run Config
+model_name: models/rgtnet_llama-3.2-1b-instruct_20250807_1044/merged_epoch_0/
+base_model: None
+embedding_type: rgtnet_orthonly
+datasets: ['purple']
+seeds_to_run: 1
+do_sample: True
+batch_size: 1
+use_deepspeed: False
+output_dir: /ceph_data/ycyoon/work/aside/experiments/eval_logs/final_test
+timestamp: 20250822_081126
+
+# Metrics (%):
+purple: mean=100.00, std=0.00

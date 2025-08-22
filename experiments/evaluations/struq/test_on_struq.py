@@ -44,6 +44,12 @@ import numpy as np
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoConfig
 
+# Fix PyTorch Dynamo logger incompatibility
+try:
+    torch._dynamo.config.suppress_errors = True
+except:
+    pass
+
 from model_api import CustomModelHandler, format_prompt
 from model import CustomLLaMA, CustomLlamaConfig
 
@@ -525,6 +531,7 @@ if __name__ == "__main__":
     parser.add_argument('--batch_size', type=int, default=16, help='Batch size for the model')
 
     parser.add_argument('--save_dir', type=str, default="", help='Directory to save the model outputs')
+    parser.add_argument('--output_dir', type=str, default="./eval_logs", help='Base output directory for results')
 
     parser.add_argument('--seed', type=list[int], default=[42, 43, 44], help='Seed for the random number generator')
 
@@ -534,7 +541,11 @@ if __name__ == "__main__":
     seed_list = [42, 43, 44]
 
     if args.save_dir == "":
-        args.save_dir = os.path.dirname(data_path)
+        # Create directory structure based on embedding type
+        if args.embedding_type in ["rgtnet", "rgtnet_orthonly"]:
+            args.save_dir = os.path.join(args.output_dir, args.embedding_type, "struq")
+        else:
+            args.save_dir = os.path.join(args.output_dir, "struq")
 
     test_model_on_struq(
         data_path, args.domain, args.attack, args.model, args.embedding_type, args.base_model, args.batch_size, args.save_dir, seed_list

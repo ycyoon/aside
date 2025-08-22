@@ -14,9 +14,9 @@ def test_both_rgtnet_variants():
     
     try:
         # Test regular RGTNet
-        print("\n=== Testing RGTNet ===")
+        print("\n=== Testing RGTNet (Llama 1B) ===")
         handler_rgtnet = CustomModelHandler(
-            checkpoint_path="/home/ycyoon/work/RGTNet/models/rgtnet_llama-3.2-1b-instruct_20250807_1044/merged_epoch_0/",
+            checkpoint_path="/home/ycyoon/work/aside/experiments/models/rgtnet_llama-3.2-1b-instruct_20250807_1044/merged_epoch_0/",
             instruct_model_path=None,
             data_model_path=None,
             tokenizer_path="meta-llama/Llama-3.2-1B-Instruct",
@@ -26,9 +26,9 @@ def test_both_rgtnet_variants():
         )
         
         # Test RGTNet orthonly
-        print("\n=== Testing RGTNet_orthonly ===")
+        print("\n=== Testing RGTNet_orthonly (Llama 1B) ===")
         handler_orthonly = CustomModelHandler(
-            checkpoint_path="/home/ycyoon/work/RGTNet/models/rgtnet_llama-3.2-1b-instruct_20250807_1044/merged_epoch_0/",
+            checkpoint_path="/home/ycyoon/work/aside/experiments/models/rgtnet_llama-3.2-1b-instruct_20250807_1044/merged_epoch_0/",
             instruct_model_path=None,
             data_model_path=None,
             tokenizer_path="meta-llama/Llama-3.2-1B-Instruct",

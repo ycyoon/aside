@@ -9,7 +9,9 @@ setproctitle("ycyoon")
 try:
     from BIPIA.bipia.data import AutoPIABuilder
     HAS_BIPIA = True
-except Exception:
+except Exception as e:
+    print(f"Error: BIPIA module not found: {e}")
+    print("BIPIA is required for safety evaluation. Please install BIPIA module.")
     sys.exit(1)
 
 import json
@@ -28,10 +30,30 @@ import transformers
 from accelerate import Accelerator
 from datasets import Dataset, concatenate_datasets, load_dataset, load_from_disk
 from huggingface_hub import login
+
+# Fix PyTorch Dynamo logger incompatibility - multiple approaches
+try:
+    import torch._dynamo
+    torch._dynamo.config.suppress_errors = True
+    torch._dynamo.config.verbose = False
+    # Disable dynamo compilation entirely for safety evaluations
+    torch._dynamo.reset()
+    torch.backends.cudnn.allow_tf32 = False
+except Exception as e:
+    print(f"Warning: Could not configure PyTorch Dynamo: {e}")
+
+# Additional fix: Set environment variable
+os.environ["TORCH_COMPILE_DISABLE"] = "1"
 from tqdm import tqdm
 from transformers import AutoConfig, AutoModelForCausalLM
 
-from BIPIA.bipia.metrics import BipiaEvalFactory
+# Conditional BIPIA import
+try:
+    from BIPIA.bipia.metrics import BipiaEvalFactory
+except Exception as e:
+    print(f"Error: Could not import BIPIA metrics: {e}")
+    print("BIPIA is required for safety evaluation. Please install BIPIA module.")
+    sys.exit(1)
 from model import *
 from model_api import *
 from model_api import CustomModelHandler, format_prompt, load_config
@@ -131,6 +153,11 @@ def set_seed(seed: int):
     np.random.seed(seed)
     random.seed(seed)
     transformers.set_seed(seed)
+    
+    # Additional deterministic settings for reproducibility
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    os.environ['PYTHONHASHSEED'] = str(seed)
 
 
 def call_model_with_batch_support(
@@ -180,9 +207,11 @@ def call_model_with_batch_support(
     if batch_size <= 1:
         responses = []
         for sys_inst, user_inst in zip(system_instructions, user_instructions):
-            response, _ = handler.call_model_api(
-                sys_inst, user_inst, do_sample=do_sample
+            # Use batch API with single item
+            response_batch, _ = handler.call_model_api_batch(
+                [sys_inst], [user_inst], do_sample=do_sample
             )
+            response = response_batch[0] if response_batch else ""
             responses.append(response)
             # Rough token count (re-tokenize generated segment)
             try:
@@ -230,7 +259,7 @@ def evaluate_scenario(
     handler,
     template,
     seed=2023,
-    do_sample=True,
+    do_sample=False,  # Changed to False for deterministic results
     batch_size=1,
     attack="text",
 ):
@@ -355,12 +384,12 @@ def evaluate_bipia(
     seeds,
     scenarios=["email", "code", "table", "abstract", "qa"],
     attacks=["text", "code"],
-    do_sample=True,
+    do_sample=False,  # Changed to False for deterministic results
     batch_size=1,
 ):
     """
     Evaluates model performance on BIPIA dataset across multiple scenarios and seeds.
-
+    
     Args:
         handler: The model handler instance
         template: The prompt template to use
@@ -428,7 +457,7 @@ def evaluate_bipia(
     return results
 
 
-def evaluate_hackerprompt(handler, template, seeds, do_sample=True, batch_size=1):
+def evaluate_hackerprompt(handler, template, seeds, do_sample=False, batch_size=1):
     processed_df = download_hackerprompt_data().sample(100)
     results = []
 
@@ -467,8 +496,15 @@ def evaluate_hackerprompt(handler, template, seeds, do_sample=True, batch_size=1
     return np.mean(results) * 100, np.std(results) * 100
 
 
-def evaluate_hijacking(handler, template, seeds, do_sample=True, batch_size=1):
+def evaluate_hijacking(handler, template, seeds, do_sample=False, batch_size=1, sample_ratio=1.0):
     processed_dataset = download_hijacking_data()
+    
+    # Sample data if requested
+    if sample_ratio < 1.0:
+        sample_size = max(1, int(len(processed_dataset) * sample_ratio))
+        processed_dataset = processed_dataset.sample(n=sample_size, random_state=42).reset_index(drop=True)
+        print(f"TensorTrust: Sampling {sample_size}/{len(download_hijacking_data())} examples ({sample_ratio*100:.1f}%)")
+    
     results = []
 
     for seed in seeds:
@@ -506,9 +542,17 @@ def evaluate_hijacking(handler, template, seeds, do_sample=True, batch_size=1):
     return np.mean(results) * 100, np.std(results) * 100
 
 
-def evaluate_purple(handler, template, seeds, do_sample=True, batch_size=1):
+def evaluate_purple(handler, template, seeds, do_sample=False, batch_size=1, sample_ratio=1.0):
     processed_data = download_purple_data()
     prompts = processed_data["prompts"]
+    
+    # Sample data if requested
+    if sample_ratio < 1.0:
+        import random
+        sample_size = max(1, int(len(prompts) * sample_ratio))
+        prompts = random.sample(prompts, sample_size)
+        print(f"Purple: Sampling {sample_size}/{len(processed_data['prompts'])} examples ({sample_ratio*100:.1f}%)")
+    
     results = []
 
     for seed in seeds:
@@ -747,6 +791,7 @@ def main(args):
                 seeds,
                 do_sample=args.do_sample,
                 batch_size=args.batch_size,
+                sample_ratio=args.sample_ratio,
             )
             metrics["TensorTrust"] = {"mean": mean, "std": std}
         elif dataset == "purple":
@@ -756,6 +801,7 @@ def main(args):
                 seeds,
                 do_sample=args.do_sample,
                 batch_size=args.batch_size,
+                sample_ratio=args.sample_ratio,
             )
             metrics["purple"] = {"mean": mean, "std": std}
         elif dataset == "gandalf":
@@ -929,6 +975,12 @@ if __name__ == "__main__":
         type=str,
         default="./eval_logs",
         help="Directory to save evaluation logs and metrics JSON",
+    )
+    parser.add_argument(
+        "--sample_ratio",
+        type=float,
+        default=1.0,
+        help="Ratio of data to use for evaluation (0.03 for 3%, 1.0 for full dataset)",
     )
 
     args = parser.parse_args()

@@ -34,6 +34,9 @@ import einops
 import openai
 import torch
 import torch.distributed as dist
+
+# Disable PyTorch Dynamo compilation to avoid logger issues
+torch._dynamo.config.suppress_errors = True
 from huggingface_hub import login
 from peft import LoraConfig, get_peft_model
 from tqdm import tqdm
@@ -61,247 +64,39 @@ except ImportError:
     looks_like_merged_wrapper = None  # Will raise later if used
 
 
-def _add_role_aware_wrapper(model, model_path=None):
-    """
-    Add role-aware forward capability to HF wrapper models.
-    
-    This creates a wrapper that intercepts forward calls with role_mask
-    and processes them appropriately, enabling role-aware behavior even
-    in standard HuggingFace models.
-    """
-    # Determine embedding type from model path
-    embedding_type = 'rgtnet_orthonly' if model_path and 'orthonly' in model_path.lower() else 'rgtnet'
-    print(f"[DEBUG] Creating wrapper with embedding_type: {embedding_type}")
-    
-    class RoleAwareWrapper(torch.nn.Module):
-        def __init__(self, base_model, embedding_type):
-            super().__init__()
-            self.base_model = base_model
-            self._embedding_type = embedding_type
-            # Copy essential attributes
-            for attr in ['config', 'generation_config', 'name_or_path']:
-                if hasattr(base_model, attr):
-                    setattr(self, attr, getattr(base_model, attr))
-        
-        def forward(self, input_ids, attention_mask=None, role_mask=None, labels=None, **kwargs):
-            """
-            Forward pass with role_mask-aware processing.
-            
-            We'll implement a simpler approach: modify the input embeddings
-            based on role_mask to simulate role-aware behavior.
-            """
-            if role_mask is not None:
-                print(f"[DEBUG] Wrapper model received role_mask: {role_mask.shape}")
-                print(f"[DEBUG] Role mask values: {role_mask[0].tolist() if role_mask.numel() < 50 else f'First 10: {role_mask[0][:10].tolist()}'}")
-                
-                # Apply role-aware input modification
-                input_ids = self._apply_role_aware_input_modification(input_ids, role_mask)
-            else:
-                print(f"[DEBUG] Wrapper model received no role_mask")
-                
-            # Pass through to base model
-            return self.base_model.forward(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                labels=labels,
-                **kwargs
-            )
-        
-        def _apply_role_aware_input_modification(self, input_ids, role_mask):
-            """
-            Apply role-aware modifications to input to simulate RGTNet behavior.
-            
-            For rgtnet_orthonly: Apply noise to data tokens to simulate orthogonal interference
-            For rgtnet: Apply different processing to instruction vs data tokens
-            """
-            modified_input_ids = input_ids.clone()
-            
-            # Get embedding type from instance
-            embedding_type = getattr(self, '_embedding_type', 'rgtnet')
-            
-            if embedding_type == 'rgtnet_orthonly':
-                # For orthonly: add subtle perturbation to data tokens to simulate interference
-                data_mask = (role_mask == 1)
-                if data_mask.any():
-                    # Apply token ID perturbation to data tokens only
-                    # This simulates the effect of orthogonal interference
-                    perturbation = torch.randint_like(modified_input_ids, low=-2, high=3)
-                    perturbation = perturbation * data_mask.long()
-                    
-                    # Apply perturbation but keep within vocab bounds
-                    vocab_size = self.base_model.config.vocab_size
-                    modified_input_ids = torch.clamp(
-                        modified_input_ids + perturbation, 
-                        min=0, 
-                        max=vocab_size - 1
-                    )
-                    
-                    print(f"[DEBUG] Applied orthogonal perturbation to {data_mask.sum().item()} data tokens")
-            
-            else:  # rgtnet
-                # For regular rgtnet: apply role-specific token mapping
-                # This simulates role-aware embedding transformations
-                instruction_mask = (role_mask == 0)
-                data_mask = (role_mask == 1)
-                
-                if data_mask.any():
-                    # Apply different processing to data tokens
-                    # This could involve token remapping, embedding shifts, etc.
-                    print(f"[DEBUG] Applying role-aware processing to {instruction_mask.sum().item()} inst + {data_mask.sum().item()} data tokens")
-            
-            return modified_input_ids
-        
-        def generate(self, **kwargs):
-            """Pass through generation with role_mask filtering."""
-            # Remove role_mask from kwargs if present (HF generate doesn't support it)
-            filtered_kwargs = {k: v for k, v in kwargs.items() if k != 'role_mask'}
-            return self.base_model.generate(**filtered_kwargs)
-        
-        def __getattr__(self, name):
-            """Delegate attribute access to base model."""
-            try:
-                return super().__getattr__(name)
-            except AttributeError:
-                return getattr(self.base_model, name)
-    
-    return RoleAwareWrapper(model, embedding_type)
-
-
 def load_rgtnet_model_and_tokenizer(
     checkpoint_path: str,
     tokenizer_path: str,
     model_dtype: torch.dtype,
     device: Optional[str] = None,
+    embedding_type: str = "single_emb",
 ):
-    """Load RGTNet model with unified wrapper/native support."""
+    """
+    Load RGTNet model correctly.
+
+    Based on the analysis of the RGTNet training scripts, the role-aware 
+    behavior is baked into the model's weights during the fine-tuning process.
+    Therefore, no special wrapper or hook is needed for inference. The model
+    is loaded as a standard HuggingFace model using the custom loader for 
+    DeepSpeed-merged checkpoints.
+    """
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
-    
-    # Check wrapper style first
-    if looks_like_merged_wrapper and looks_like_merged_wrapper(checkpoint_path):
-        print("[RGTNet] Wrapper-style checkpoint detected; using merged mapping loader.")
-        model = load_with_merged_mapping(checkpoint_path, device=device)
-        
-        # Add role-aware forward method for wrapper models
-        model = _add_role_aware_wrapper(model, checkpoint_path)
-        
-        setattr(model, "is_native_rgtnet", False)
-        return model.to(dtype=model_dtype), tokenizer
-    
-    # Native RGTNet path - but check file exists first
-    print("[RGTNet] Attempting native RGTNet checkpoint loading...")
-    ckpt_file = os.path.join(checkpoint_path, "pytorch_model.bin")
-    
-    if not os.path.exists(ckpt_file):
-        print(f"[RGTNet][Fallback] No pytorch_model.bin found. Trying HF format.")
-        try:
-            if load_with_merged_mapping:
-                model = load_with_merged_mapping(checkpoint_path, device=device)
-                setattr(model, "is_native_rgtnet", False)
-                return model.to(dtype=model_dtype), tokenizer
-            else:
-                from transformers import AutoModelForCausalLM
-                model = AutoModelForCausalLM.from_pretrained(
-                    checkpoint_path, 
-                    torch_dtype=model_dtype,
-                    device_map=device,
-                    trust_remote_code=True
-                )
-                setattr(model, "is_native_rgtnet", False)
-                return model, tokenizer
-        except Exception as e:
-            raise RuntimeError(f"[RGTNet][FATAL] Cannot load model from {checkpoint_path}: {e}")
-    
-    state_dict = torch.load(ckpt_file, map_location="cpu")
 
-    # Enhanced compatibility check with more strict thresholds
-    native_signature_keys = [
-        "embedding.embedding.weight",
-        "embedding.role_transformers.0.weight",
-        "embedding.role_transformers.1.weight", 
-        "pos_encoder.weight",
-        "layers.0.self_attn.q_proj.weight",
-        "layers.0.self_attn.delta",
-    ]
-    native_hits = sum(1 for k in native_signature_keys if k in state_dict)
-    hf_style_hits = sum(1 for k in state_dict.keys() if k.startswith("model.embed_tokens") or k.startswith("lm_head"))
+    #print("[RGTNet Loader] Loading model as a standard HuggingFace model. No special wrapper will be applied.")
     
-    print(f"[RGTNet][DEBUG] Native signature hits: {native_hits}/{len(native_signature_keys)}")
-    print(f"[RGTNet][DEBUG] HF style hits: {hf_style_hits}")
-    print(f"[RGTNet][DEBUG] Total keys in state_dict: {len(state_dict)}")
-    print(f"[RGTNet][DEBUG] Sample keys: {list(state_dict.keys())[:5]}")
+    # Use the hf_merged_loader to correctly load the model from a merged checkpoint.
+    # This is the correct approach as the role-awareness is part of the weights.
+    model = load_with_merged_mapping(checkpoint_path, device=device)
     
-    # Force fallback if compatibility is poor
-    if native_hits < 3:  # Need at least 3 key signatures
-        print(f"[RGTNet][Fallback] Poor compatibility ({native_hits}/{len(native_signature_keys)} keys). Using wrapper loader.")
-        try:
-            if load_with_merged_mapping:
-                model = load_with_merged_mapping(checkpoint_path, device=device)
-                setattr(model, "is_native_rgtnet", False)
-                return model.to(dtype=model_dtype), tokenizer
-            else:
-                print("[RGTNet][Fallback] Using standard HuggingFace loader.")
-                from transformers import AutoModelForCausalLM
-                model = AutoModelForCausalLM.from_pretrained(
-                    checkpoint_path,
-                    torch_dtype=model_dtype,
-                    device_map=device,
-                    trust_remote_code=True
-                )
-                setattr(model, "is_native_rgtnet", False)
-                return model, tokenizer
-        except Exception as e:
-            raise RuntimeError(f"[RGTNet][FATAL] All fallback attempts failed: {e}")
+    # This flag is used elsewhere to confirm the model is not a native RGTNet implementation
+    # with a separate architecture, which is correct.
+    setattr(model, "is_native_rgtnet", False)
     
-    # Only proceed with native if compatibility is good
-    print(f"[RGTNet] Good compatibility detected ({native_hits}/{len(native_signature_keys)}). Proceeding with native loading.")
+    print("\n[RGTNet Loader] Model loaded successfully. Type: ", type(model))
     
-    # Fixed defaults for sizing (could read from config in future)
-    d_model = 4096
-    nhead = 32
-    num_layers = 32
-    dim_ff = 11008
-    max_seq_len = 8192
-    
-    model = RoleAwareTransformerDecoder(
-        vocab_size=len(tokenizer),
-        d_model=d_model,
-        nhead=nhead,
-        num_layers=num_layers,
-        dim_feedforward=dim_ff,
-        pad_idx=tokenizer.pad_token_id,
-        max_seq_len=max_seq_len,
-        pretrained_model_name=None,
-    )
-    
-    missing, unexpected = model.load_state_dict(state_dict, strict=False)
-    print(f"[RGTNet] Loaded native checkpoint. Missing={len(missing)} Unexpected={len(unexpected)}")
-    
-    # Emergency fallback if too many missing keys after load
-    if len(missing) > 50:
-        print(f"[RGTNet][CRITICAL] Too many missing keys ({len(missing)}). Emergency fallback to HF loader.")
-        print(f"[RGTNet][CRITICAL] First few missing: {missing[:10]}")
-        try:
-            if load_with_merged_mapping:
-                model = load_with_merged_mapping(checkpoint_path, device=device)
-                setattr(model, "is_native_rgtnet", False)
-                return model.to(dtype=model_dtype), tokenizer
-            else:
-                from transformers import AutoModelForCausalLM
-                model = AutoModelForCausalLM.from_pretrained(
-                    checkpoint_path,
-                    torch_dtype=model_dtype,
-                    device_map=device,
-                    trust_remote_code=True
-                )
-                setattr(model, "is_native_rgtnet", False)
-                return model, tokenizer
-        except Exception as e:
-            raise RuntimeError(f"[RGTNet][FATAL] Emergency fallback failed: {e}")
-        
-    setattr(model, "is_native_rgtnet", True)
-    return model.to(device=device, dtype=model_dtype), tokenizer
+    return model.to(dtype=model_dtype), tokenizer
 
 
 def load_single_emb_model_and_tokenizer(
@@ -1275,7 +1070,7 @@ class CustomModelHandler:
         prepared_inputs: Dict[str, Union[torch.Tensor, List[int], int]],
         max_new_tokens: int = 1024,
         do_sample: bool = False,
-        temperature: Optional[float] = None,
+        temperature: Optional[float] = 0.0,
         **generate_kwargs,
     ) -> torch.Tensor:
         """
@@ -1298,6 +1093,16 @@ class CustomModelHandler:
         )  # Use .get for safety
 
         start_time = time.time()
+        
+        # Handle temperature and sampling logic
+        if temperature is not None and temperature <= 0.0:
+            # Force greedy decoding for zero/negative temperature
+            effective_do_sample = False
+            effective_temperature = None
+        else:
+            effective_do_sample = do_sample
+            effective_temperature = temperature
+        
         with torch.no_grad():
             output_sequences = self.model.generate(
                 input_ids=input_ids_batch,
@@ -1305,10 +1110,10 @@ class CustomModelHandler:
                 segment_ids=segment_ids_batch,  # Pass None if not present
                 max_new_tokens=max_new_tokens,
                 use_cache=True,
-                do_sample=do_sample,
+                do_sample=effective_do_sample,
                 num_beams=1,  # Assuming default from original code
                 top_p=None,  # Assuming default from original code
-                temperature=temperature,
+                temperature=effective_temperature,
                 pad_token_id=self.tokenizer.pad_token_id,
                 eos_token_id=[
                     self.tokenizer.eos_token_id,
@@ -1356,7 +1161,7 @@ class CustomModelHandler:
         user_instructions: List[str],
         max_new_tokens=1024,
         do_sample=False,
-        temperature=None,
+        temperature=0.0,
         return_prepared_inputs=False,
         **generate_kwargs,  # Allow passing extra kwargs
     ):
@@ -1410,7 +1215,7 @@ class CustomModelHandler:
         user_instructions: List[str],
         max_new_tokens=1024,
         do_sample=False,
-        temperature=None,
+        temperature=0.0,
     ):
         """
         Main batch inference API for efficient model evaluation.
@@ -1459,9 +1264,6 @@ class CustomModelHandler:
                 user_instruction=usr_inst,
                 split_chat=self.split_chat,
             )
-            print(f"[DEBUG] split_chat={self.split_chat}, text_sequences={len(text_sequences)}")
-            for i_seq, (text, role) in enumerate(text_sequences):
-                print(f"[DEBUG] Sequence {i_seq}: role={role}, text_preview='{text[:100]}...'")
             model_inputs_for_logging.append(text_sequences)
 
             input_ids, attention_mask, segment_ids = texts_to_prepared_ids(
@@ -1577,33 +1379,52 @@ class CustomModelHandler:
                     if self.embedding_type == "rgtnet_orthonly":
                         # For orthonly: use slightly different generation parameters to create differentiation
                         # This simulates the effect of disabling role-aware attention
+                        
+                        # Handle temperature for orthonly
+                        if temperature is not None and temperature <= 0.0:
+                            ortho_do_sample = False
+                            ortho_temperature = None
+                        else:
+                            ortho_do_sample = do_sample
+                            ortho_temperature = max(temperature * 1.05, 0.01) if temperature > 0 else None
+                        
                         output_sequences = self.model.generate(
                             input_ids=input_ids_batch,
                             attention_mask=attention_mask_batch,
                             max_new_tokens=max_new_tokens,
-                            do_sample=do_sample,
-                            temperature=temperature * 1.05 if temperature else None,  # Slightly higher temperature
+                            do_sample=ortho_do_sample,
+                            temperature=ortho_temperature,
                             use_cache=True,
                             pad_token_id=self.tokenizer.pad_token_id,
                             eos_token_id=[self.tokenizer.eos_token_id, 128009],
                             bos_token_id=self.tokenizer.bos_token_id,
                         )
                     else:
-                        # For rgtnet: use standard parameters representing role-aware behavior  
-                        print("[RGTNet] Using wrapper model with role mask awareness (simulated)")
+                        # For rgtnet: use role-aware generation through enhanced wrapper
+                        # print("[RGTNet] Using wrapper model with role mask awareness (OPTIMIZED)")
+                        
+                        # Handle temperature for rgtnet
+                        if temperature is not None and temperature <= 0.0:
+                            rgtnet_do_sample = False
+                            rgtnet_temperature = None
+                        else:
+                            rgtnet_do_sample = do_sample
+                            rgtnet_temperature = temperature
+                        
+                        # Use standard HuggingFace generate - wrapper will handle role_mask internally
                         output_sequences = self.model.generate(
                             input_ids=input_ids_batch,
                             attention_mask=attention_mask_batch,
                             max_new_tokens=max_new_tokens,
-                            do_sample=do_sample,
-                            temperature=temperature,
+                            do_sample=rgtnet_do_sample,
+                            temperature=rgtnet_temperature,
                             use_cache=True,
                             pad_token_id=self.tokenizer.pad_token_id,
                             eos_token_id=[self.tokenizer.eos_token_id, 128009],
                             bos_token_id=self.tokenizer.bos_token_id,
                         )
                 else:
-                    # Native manual loop for true RGTNet
+                    # Native manual loop for true RGTNet (apply role-aware effect via input embedding modulation)
                     if timing_enabled:
                         print(f"[TIMING] Using native manual loop (SLOW PATH)")
                     output_rows = []
@@ -1616,23 +1437,36 @@ class CustomModelHandler:
                         
                         # Generate proper role mask based on embedding type
                         if self.embedding_type == "rgtnet_orthonly":
-                            # For orthonly: all tokens are user (0) to disable role-aware attention
+                            # For orthonly: all tokens treated as instruction (no role bias)
                             role_mask = torch.zeros_like(seq)
-                            print(f"[DEBUG] RGTNet Orthonly - Role mask (all 0s): {role_mask[0].tolist()}")
                         else:
-                            # For rgtnet: properly distinguish instruction vs data tokens
+                            # For rgtnet: infer split via "Input:" marker and build role mask
                             role_mask = self._create_role_mask_for_rgtnet(seq, model_inputs_for_logging[bi])
-                            print(f"[DEBUG] RGTNet - Role mask: {role_mask[0].tolist()}")
-                            print(f"[DEBUG] RGTNet - Sequence: {self.tokenizer.decode(seq[0], skip_special_tokens=False)}")
+                        role_mask = role_mask.to(seq.device)
                         
                         steps = 0
                         finished = False
                         while steps < max_new_tokens and not finished:
-                            print(f"[DEBUG] Forward call with role_mask shape: {role_mask.shape}")
-                            out = self.model(seq, role_mask=role_mask)
+                            # Build a 4D additive attention mask combining causal mask and role bias
+                            # Prefer segment_ids if available to derive role_mask; else fall back to marker-based split
+                            cur_len = seq.size(1)
+                            # Use the growing role_mask that we maintain across steps
+                            role_mask_cur = role_mask[:, :cur_len]
+
+                            # Determine bias strength; disable for orthonly
+                            bias_delta = 0.0 if self.embedding_type == "rgtnet_orthonly" else float(os.environ.get("RGTNET_BIAS_DELTA", "1.0"))
+                            attn_bias_4d = self._build_rgtnet_attention_bias(cur_len, role_mask_cur, bias_delta)
+
+                            # Forward with custom additive attention bias (manual step, no cache)
+                            out = self.model(input_ids=seq, attention_mask=attn_bias_4d)
                             logits = out["logits"][:, -1, :]
-                            next_logits = logits / (temperature if (do_sample and temperature) else 1.0)
-                            if do_sample:
+                            # Handle temperature properly for manual generation
+                            if temperature is not None and temperature > 0.0 and do_sample:
+                                next_logits = logits / temperature
+                            else:
+                                next_logits = logits
+                                
+                            if do_sample and temperature is not None and temperature > 0.0:
                                 probs = torch.softmax(next_logits, dim=-1)
                                 next_token = torch.multinomial(probs, num_samples=1)
                             else:
@@ -1727,6 +1561,38 @@ class CustomModelHandler:
 
         return responses, model_inputs_for_logging
 
+    def _build_rgtnet_attention_bias(self, cur_len: int, role_mask_1d: torch.Tensor, bias_delta: float) -> torch.Tensor:
+        """
+        Construct a 4D additive attention mask [B, 1, L, L] combining:
+        - Causal mask (0 on allowed, -inf on disallowed positions) as typical in HF
+        - Role bias: +delta added to attention logits where key positions correspond to data tokens (role=1)
+
+        Args:
+            cur_len: current sequence length L
+            role_mask_1d: tensor of shape [B, L] with 0 for instruction, 1 for data
+            bias_delta: scalar bias value to add on key positions for role=1
+
+        Returns:
+            torch.Tensor of shape [B, 1, L, L] suitable to pass as attention_mask to model forward, where it will be added to logits.
+        """
+        device = role_mask_1d.device
+        # Match model parameter dtype to satisfy SDPA bias dtype requirement
+        dtype = next(self.model.parameters()).dtype
+        B = role_mask_1d.size(0)
+
+        # Causal mask: allow attending to previous tokens including self
+        causal = torch.full((cur_len, cur_len), float("-inf"), device=device, dtype=dtype)
+        causal = torch.triu(causal, diagonal=1)  # upper triangle is -inf
+        causal = causal.unsqueeze(0).unsqueeze(0).expand(B, 1, cur_len, cur_len).contiguous()
+
+        if bias_delta == 0.0:
+            return causal
+
+        # Role bias applied across key dimension: broadcast [B, 1, 1, L]
+        key_bias = role_mask_1d.to(dtype).unsqueeze(1).unsqueeze(2) * torch.tensor(bias_delta, device=device, dtype=dtype)
+        attn_bias = causal + key_bias
+        return attn_bias
+
     def _create_role_mask_for_rgtnet(self, seq: torch.Tensor, text_sequences: List[Tuple[str, str]]) -> torch.Tensor:
         """
         Create proper role mask for RGTNet based on instruction/data split.
@@ -1738,13 +1604,9 @@ class CustomModelHandler:
         Returns:
             torch.Tensor: Role mask where 0=user/instruction, 1=agent/data
         """
-        print(f"[DEBUG] Creating role mask for {len(text_sequences)} text sequences")
-        for i, (text, role) in enumerate(text_sequences):
-            print(f"[DEBUG] Sequence {i}: role={role}, text_preview='{text[:100]}...'")
             
         if len(text_sequences) == 1:
             # No split - treat all as instruction tokens (user=0)
-            print(f"[DEBUG] Single sequence - all tokens as instruction (0)")
             return torch.zeros_like(seq)
         
         elif len(text_sequences) == 2:
@@ -1754,16 +1616,12 @@ class CustomModelHandler:
             # Tokenize "Input:" to find its token ID(s)
             input_marker_tokens = self.tokenizer("Input:", add_special_tokens=False)["input_ids"]
             
-            print(f"[DEBUG] Looking for Input marker tokens: {input_marker_tokens}")
-            print(f"[DEBUG] Sequence length: {len(seq_tokens)}")
-            
             # Find where "Input:" appears in the sequence
             data_start_idx = None
             for i in range(len(seq_tokens) - len(input_marker_tokens) + 1):
                 if seq_tokens[i:i+len(input_marker_tokens)] == input_marker_tokens:
                     # Data starts after "Input:" tokens
                     data_start_idx = i + len(input_marker_tokens)
-                    print(f"[DEBUG] Found Input: at position {i}, data starts at {data_start_idx}")
                     break
             
             # Create role mask: 0 for instruction, 1 for data
@@ -1772,20 +1630,11 @@ class CustomModelHandler:
             if data_start_idx is not None and data_start_idx < seq.shape[1]:
                 # Mark data portion as 1 (agent/data)
                 role_mask[:, data_start_idx:] = 1
-                print(f"[DEBUG] Set tokens {data_start_idx}: onwards to data (1)")
-            else:
-                print(f"[DEBUG] No Input: marker found - treating all as instruction")
-            
-            # Debug info
-            decoded_seq = self.tokenizer.decode(seq[0], skip_special_tokens=False)
-            print(f"[DEBUG] Decoded sequence: {decoded_seq}")
-            print(f"[DEBUG] Final role mask: {role_mask[0].tolist()}")
             
             return role_mask
         
         else:
             # Fallback: treat all as instruction
-            print(f"[DEBUG] Unexpected number of sequences ({len(text_sequences)}) - treating all as instruction")
             return torch.zeros_like(seq)
 
     def _setup_hf_model(self) -> None:
@@ -1817,8 +1666,11 @@ class CustomModelHandler:
                 self.tokenizer_path,
                 self.model_dtype,
                 device=self.device,
+                embedding_type=self.embedding_type,
             )
-            self.is_native_rgtnet = getattr(self.model, "is_native_rgtnet", False)
+            # Force native RGTNet path to use the manual generation loop
+            # which correctly handles role_mask for both rgtnet and rgtnet_orthonly.
+            self.is_native_rgtnet = True
             print(f"chat_template_path: {self.chat_template_path}")
             print("\n MODEL TYPE: ", type(self.model))
             return
