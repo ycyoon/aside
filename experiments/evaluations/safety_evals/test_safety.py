@@ -3,6 +3,8 @@ import os, sys
 sys.path.append(".")
 sys.path.append('/home/ycyoon/work/aside/experiments/evaluations')
 
+from setproctitle import setproctitle
+setproctitle("ycyoon")
 
 try:
     from BIPIA.bipia.data import AutoPIABuilder
@@ -13,6 +15,7 @@ except Exception:
 import json
 import os
 import random
+import time
 from functools import partial
 from pathlib import Path
 from datetime import datetime
@@ -131,7 +134,12 @@ def set_seed(seed: int):
 
 
 def call_model_with_batch_support(
-    handler, system_instructions, user_instructions, batch_size=1, do_sample=False
+    handler,
+    system_instructions,
+    user_instructions,
+    batch_size=1,
+    do_sample=False,
+    show_progress=True,
 ):
     """
     General handler function that chooses between single and batch API calls based on batch_size.
@@ -150,27 +158,69 @@ def call_model_with_batch_support(
         system_instructions = [system_instructions]
         user_instructions = [user_instructions]
 
+    total_items = len(system_instructions)
+    start_time = time.time()
+    total_generated_tokens = 0
+    processed_items = 0
+
+    def _update_pbar(pbar):
+        if not show_progress or pbar is None:
+            return
+        elapsed = max(time.time() - start_time, 1e-6)
+        tok_per_sec = total_generated_tokens / elapsed if total_generated_tokens else 0.0
+        avg_gen_tok = (total_generated_tokens / processed_items) if processed_items else 0.0
+        pbar.set_postfix(
+            gen_tok=total_generated_tokens,
+            tok_per_sec=f"{tok_per_sec:.1f}",
+            avg_tok=f"{avg_gen_tok:.1f}"
+        )
+
+    pbar = tqdm(total=total_items, desc="generate", dynamic_ncols=True) if show_progress else None
+
     if batch_size <= 1:
-        # Single API calls
         responses = []
-        for sys_inst, user_inst in tqdm(
-            zip(system_instructions, user_instructions), total=len(system_instructions)
-        ):
+        for sys_inst, user_inst in zip(system_instructions, user_instructions):
             response, _ = handler.call_model_api(
                 sys_inst, user_inst, do_sample=do_sample
             )
             responses.append(response)
+            # Rough token count (re-tokenize generated segment)
+            try:
+                gen_ids = handler.tokenizer(response, add_special_tokens=False).input_ids
+                total_generated_tokens += len(gen_ids)
+            except Exception:
+                pass
+            processed_items += 1
+            if pbar:
+                pbar.update(1)
+                _update_pbar(pbar)
     else:
-        # Batch API calls
         all_responses = []
-        for i in tqdm(range(0, len(system_instructions), batch_size)):
+        for i in range(0, total_items, batch_size):
             batch_sys = system_instructions[i : i + batch_size]
             batch_user = user_instructions[i : i + batch_size]
-            responses, _ = handler.call_model_api_batch(
+            responses_batch, _ = handler.call_model_api_batch(
                 batch_sys, batch_user, do_sample=do_sample
             )
-            all_responses.extend(responses)
+            all_responses.extend(responses_batch)
+            # Token accounting
+            try:
+                batch_token_counts = [
+                    len(handler.tokenizer(r, add_special_tokens=False).input_ids)
+                    for r in responses_batch
+                ]
+                total_generated_tokens += sum(batch_token_counts)
+            except Exception:
+                pass
+            processed_items += len(responses_batch)
+            if pbar:
+                pbar.update(len(responses_batch))
+                _update_pbar(pbar)
         responses = all_responses
+
+    if pbar:
+        _update_pbar(pbar)
+        pbar.close()
 
     return responses
 

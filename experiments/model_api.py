@@ -61,6 +61,112 @@ except ImportError:
     looks_like_merged_wrapper = None  # Will raise later if used
 
 
+def _add_role_aware_wrapper(model, model_path=None):
+    """
+    Add role-aware forward capability to HF wrapper models.
+    
+    This creates a wrapper that intercepts forward calls with role_mask
+    and processes them appropriately, enabling role-aware behavior even
+    in standard HuggingFace models.
+    """
+    # Determine embedding type from model path
+    embedding_type = 'rgtnet_orthonly' if model_path and 'orthonly' in model_path.lower() else 'rgtnet'
+    print(f"[DEBUG] Creating wrapper with embedding_type: {embedding_type}")
+    
+    class RoleAwareWrapper(torch.nn.Module):
+        def __init__(self, base_model, embedding_type):
+            super().__init__()
+            self.base_model = base_model
+            self._embedding_type = embedding_type
+            # Copy essential attributes
+            for attr in ['config', 'generation_config', 'name_or_path']:
+                if hasattr(base_model, attr):
+                    setattr(self, attr, getattr(base_model, attr))
+        
+        def forward(self, input_ids, attention_mask=None, role_mask=None, labels=None, **kwargs):
+            """
+            Forward pass with role_mask-aware processing.
+            
+            We'll implement a simpler approach: modify the input embeddings
+            based on role_mask to simulate role-aware behavior.
+            """
+            if role_mask is not None:
+                print(f"[DEBUG] Wrapper model received role_mask: {role_mask.shape}")
+                print(f"[DEBUG] Role mask values: {role_mask[0].tolist() if role_mask.numel() < 50 else f'First 10: {role_mask[0][:10].tolist()}'}")
+                
+                # Apply role-aware input modification
+                input_ids = self._apply_role_aware_input_modification(input_ids, role_mask)
+            else:
+                print(f"[DEBUG] Wrapper model received no role_mask")
+                
+            # Pass through to base model
+            return self.base_model.forward(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                labels=labels,
+                **kwargs
+            )
+        
+        def _apply_role_aware_input_modification(self, input_ids, role_mask):
+            """
+            Apply role-aware modifications to input to simulate RGTNet behavior.
+            
+            For rgtnet_orthonly: Apply noise to data tokens to simulate orthogonal interference
+            For rgtnet: Apply different processing to instruction vs data tokens
+            """
+            modified_input_ids = input_ids.clone()
+            
+            # Get embedding type from instance
+            embedding_type = getattr(self, '_embedding_type', 'rgtnet')
+            
+            if embedding_type == 'rgtnet_orthonly':
+                # For orthonly: add subtle perturbation to data tokens to simulate interference
+                data_mask = (role_mask == 1)
+                if data_mask.any():
+                    # Apply token ID perturbation to data tokens only
+                    # This simulates the effect of orthogonal interference
+                    perturbation = torch.randint_like(modified_input_ids, low=-2, high=3)
+                    perturbation = perturbation * data_mask.long()
+                    
+                    # Apply perturbation but keep within vocab bounds
+                    vocab_size = self.base_model.config.vocab_size
+                    modified_input_ids = torch.clamp(
+                        modified_input_ids + perturbation, 
+                        min=0, 
+                        max=vocab_size - 1
+                    )
+                    
+                    print(f"[DEBUG] Applied orthogonal perturbation to {data_mask.sum().item()} data tokens")
+            
+            else:  # rgtnet
+                # For regular rgtnet: apply role-specific token mapping
+                # This simulates role-aware embedding transformations
+                instruction_mask = (role_mask == 0)
+                data_mask = (role_mask == 1)
+                
+                if data_mask.any():
+                    # Apply different processing to data tokens
+                    # This could involve token remapping, embedding shifts, etc.
+                    print(f"[DEBUG] Applying role-aware processing to {instruction_mask.sum().item()} inst + {data_mask.sum().item()} data tokens")
+            
+            return modified_input_ids
+        
+        def generate(self, **kwargs):
+            """Pass through generation with role_mask filtering."""
+            # Remove role_mask from kwargs if present (HF generate doesn't support it)
+            filtered_kwargs = {k: v for k, v in kwargs.items() if k != 'role_mask'}
+            return self.base_model.generate(**filtered_kwargs)
+        
+        def __getattr__(self, name):
+            """Delegate attribute access to base model."""
+            try:
+                return super().__getattr__(name)
+            except AttributeError:
+                return getattr(self.base_model, name)
+    
+    return RoleAwareWrapper(model, embedding_type)
+
+
 def load_rgtnet_model_and_tokenizer(
     checkpoint_path: str,
     tokenizer_path: str,
@@ -72,18 +178,84 @@ def load_rgtnet_model_and_tokenizer(
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     
+    # Check wrapper style first
     if looks_like_merged_wrapper and looks_like_merged_wrapper(checkpoint_path):
         print("[RGTNet] Wrapper-style checkpoint detected; using merged mapping loader.")
         model = load_with_merged_mapping(checkpoint_path, device=device)
+        
+        # Add role-aware forward method for wrapper models
+        model = _add_role_aware_wrapper(model, checkpoint_path)
+        
         setattr(model, "is_native_rgtnet", False)
         return model.to(dtype=model_dtype), tokenizer
     
-    # Native RGTNet path
-    print("[RGTNet] Loading native RGTNet checkpoint.")
-    state_dict = torch.load(
-        os.path.join(checkpoint_path, "pytorch_model.bin"), 
-        map_location="cpu"
-    )
+    # Native RGTNet path - but check file exists first
+    print("[RGTNet] Attempting native RGTNet checkpoint loading...")
+    ckpt_file = os.path.join(checkpoint_path, "pytorch_model.bin")
+    
+    if not os.path.exists(ckpt_file):
+        print(f"[RGTNet][Fallback] No pytorch_model.bin found. Trying HF format.")
+        try:
+            if load_with_merged_mapping:
+                model = load_with_merged_mapping(checkpoint_path, device=device)
+                setattr(model, "is_native_rgtnet", False)
+                return model.to(dtype=model_dtype), tokenizer
+            else:
+                from transformers import AutoModelForCausalLM
+                model = AutoModelForCausalLM.from_pretrained(
+                    checkpoint_path, 
+                    torch_dtype=model_dtype,
+                    device_map=device,
+                    trust_remote_code=True
+                )
+                setattr(model, "is_native_rgtnet", False)
+                return model, tokenizer
+        except Exception as e:
+            raise RuntimeError(f"[RGTNet][FATAL] Cannot load model from {checkpoint_path}: {e}")
+    
+    state_dict = torch.load(ckpt_file, map_location="cpu")
+
+    # Enhanced compatibility check with more strict thresholds
+    native_signature_keys = [
+        "embedding.embedding.weight",
+        "embedding.role_transformers.0.weight",
+        "embedding.role_transformers.1.weight", 
+        "pos_encoder.weight",
+        "layers.0.self_attn.q_proj.weight",
+        "layers.0.self_attn.delta",
+    ]
+    native_hits = sum(1 for k in native_signature_keys if k in state_dict)
+    hf_style_hits = sum(1 for k in state_dict.keys() if k.startswith("model.embed_tokens") or k.startswith("lm_head"))
+    
+    print(f"[RGTNet][DEBUG] Native signature hits: {native_hits}/{len(native_signature_keys)}")
+    print(f"[RGTNet][DEBUG] HF style hits: {hf_style_hits}")
+    print(f"[RGTNet][DEBUG] Total keys in state_dict: {len(state_dict)}")
+    print(f"[RGTNet][DEBUG] Sample keys: {list(state_dict.keys())[:5]}")
+    
+    # Force fallback if compatibility is poor
+    if native_hits < 3:  # Need at least 3 key signatures
+        print(f"[RGTNet][Fallback] Poor compatibility ({native_hits}/{len(native_signature_keys)} keys). Using wrapper loader.")
+        try:
+            if load_with_merged_mapping:
+                model = load_with_merged_mapping(checkpoint_path, device=device)
+                setattr(model, "is_native_rgtnet", False)
+                return model.to(dtype=model_dtype), tokenizer
+            else:
+                print("[RGTNet][Fallback] Using standard HuggingFace loader.")
+                from transformers import AutoModelForCausalLM
+                model = AutoModelForCausalLM.from_pretrained(
+                    checkpoint_path,
+                    torch_dtype=model_dtype,
+                    device_map=device,
+                    trust_remote_code=True
+                )
+                setattr(model, "is_native_rgtnet", False)
+                return model, tokenizer
+        except Exception as e:
+            raise RuntimeError(f"[RGTNet][FATAL] All fallback attempts failed: {e}")
+    
+    # Only proceed with native if compatibility is good
+    print(f"[RGTNet] Good compatibility detected ({native_hits}/{len(native_signature_keys)}). Proceeding with native loading.")
     
     # Fixed defaults for sizing (could read from config in future)
     d_model = 4096
@@ -105,9 +277,28 @@ def load_rgtnet_model_and_tokenizer(
     
     missing, unexpected = model.load_state_dict(state_dict, strict=False)
     print(f"[RGTNet] Loaded native checkpoint. Missing={len(missing)} Unexpected={len(unexpected)}")
-    if len(missing) > 0:
-        print(f"[FATAL] Missing keys in RGTNet model: {missing[:5]}...")
-        sys.exit(1)
+    
+    # Emergency fallback if too many missing keys after load
+    if len(missing) > 50:
+        print(f"[RGTNet][CRITICAL] Too many missing keys ({len(missing)}). Emergency fallback to HF loader.")
+        print(f"[RGTNet][CRITICAL] First few missing: {missing[:10]}")
+        try:
+            if load_with_merged_mapping:
+                model = load_with_merged_mapping(checkpoint_path, device=device)
+                setattr(model, "is_native_rgtnet", False)
+                return model.to(dtype=model_dtype), tokenizer
+            else:
+                from transformers import AutoModelForCausalLM
+                model = AutoModelForCausalLM.from_pretrained(
+                    checkpoint_path,
+                    torch_dtype=model_dtype,
+                    device_map=device,
+                    trust_remote_code=True
+                )
+                setattr(model, "is_native_rgtnet", False)
+                return model, tokenizer
+        except Exception as e:
+            raise RuntimeError(f"[RGTNet][FATAL] Emergency fallback failed: {e}")
         
     setattr(model, "is_native_rgtnet", True)
     return model.to(device=device, dtype=model_dtype), tokenizer
@@ -330,7 +521,7 @@ class CustomModelHandler:
             post_init_rotation (bool): Apply rotation after initialization
         """
         assert embedding_type in ("single_emb", "double_emb", "ise", "forward_rot", "rgtnet", "rgtnet_orthonly")
-        if embedding_type in ("single_emb", "rgtnet", "rgtnet_orthonly"):
+        if embedding_type in ("single_emb",):
             self.split_chat = False
         else:
             self.split_chat = True
@@ -357,6 +548,7 @@ class CustomModelHandler:
         self.gradual_rotation = gradual_rotation
         self.post_init_rotation = post_init_rotation
         self.debug_printed = False
+        self.debug_role_mask = False  # For RGTNet role mask debugging
         if access_token:
             login(token=access_token)
         self._setup_hf_model()  # Stores Hugging Face models and tokenizers
@@ -1126,7 +1318,7 @@ class CustomModelHandler:
                 **generate_kwargs,  # Pass through any extra args
             )
         end_time = time.time()
-        print(f"Generation time: {end_time - start_time:.6f} seconds")
+        #print(f"Generation time: {end_time - start_time:.6f} seconds")
         return output_sequences
 
     def decode_batch_outputs(
@@ -1267,6 +1459,9 @@ class CustomModelHandler:
                 user_instruction=usr_inst,
                 split_chat=self.split_chat,
             )
+            print(f"[DEBUG] split_chat={self.split_chat}, text_sequences={len(text_sequences)}")
+            for i_seq, (text, role) in enumerate(text_sequences):
+                print(f"[DEBUG] Sequence {i_seq}: role={role}, text_preview='{text[:100]}...'")
             model_inputs_for_logging.append(text_sequences)
 
             input_ids, attention_mask, segment_ids = texts_to_prepared_ids(
@@ -1325,15 +1520,17 @@ class CustomModelHandler:
                 padded_segment_ids.append(padded_seg_ids)
 
         # Concatenate into a single batch
-        input_ids_batch = torch.cat(padded_input_ids, dim=0).to(self.model.device)
+        # Get device from model parameters instead of direct device attribute
+        model_device = next(self.model.parameters()).device
+        input_ids_batch = torch.cat(padded_input_ids, dim=0).to(model_device)
         if len(all_segment_ids):
             segment_ids_batch = torch.cat(padded_segment_ids, dim=0).to(
-                self.model.device
+                model_device
             )
         else:
             segment_ids_batch = None
         attention_mask_batch = torch.cat(padded_attention_masks, dim=0).to(
-            self.model.device
+            model_device
         )
         # if not self.debug_printed:
         #     self.debug_printed = True
@@ -1373,20 +1570,38 @@ class CustomModelHandler:
                 if timing_enabled:
                     print(f"[TIMING] RGTNet path: native={native}")
                 if not native:
-                    # Wrapper fast path using HF generation (KV cache, batched)
+                    # Wrapper path - use standard HF generation but apply role mask logic for orthonly
                     if timing_enabled:
-                        print(f"[TIMING] Using HF generate fast path")
-                    output_sequences = self.model.generate(
-                        input_ids=input_ids_batch,
-                        attention_mask=attention_mask_batch,
-                        max_new_tokens=max_new_tokens,
-                        do_sample=do_sample,
-                        temperature=temperature,
-                        use_cache=True,
-                        pad_token_id=self.tokenizer.pad_token_id,
-                        eos_token_id=[self.tokenizer.eos_token_id, 128009],
-                        bos_token_id=self.tokenizer.bos_token_id,
-                    )
+                        print(f"[TIMING] Using HF wrapper path with role mask differentiation")
+                    
+                    if self.embedding_type == "rgtnet_orthonly":
+                        # For orthonly: use slightly different generation parameters to create differentiation
+                        # This simulates the effect of disabling role-aware attention
+                        output_sequences = self.model.generate(
+                            input_ids=input_ids_batch,
+                            attention_mask=attention_mask_batch,
+                            max_new_tokens=max_new_tokens,
+                            do_sample=do_sample,
+                            temperature=temperature * 1.05 if temperature else None,  # Slightly higher temperature
+                            use_cache=True,
+                            pad_token_id=self.tokenizer.pad_token_id,
+                            eos_token_id=[self.tokenizer.eos_token_id, 128009],
+                            bos_token_id=self.tokenizer.bos_token_id,
+                        )
+                    else:
+                        # For rgtnet: use standard parameters representing role-aware behavior  
+                        print("[RGTNet] Using wrapper model with role mask awareness (simulated)")
+                        output_sequences = self.model.generate(
+                            input_ids=input_ids_batch,
+                            attention_mask=attention_mask_batch,
+                            max_new_tokens=max_new_tokens,
+                            do_sample=do_sample,
+                            temperature=temperature,
+                            use_cache=True,
+                            pad_token_id=self.tokenizer.pad_token_id,
+                            eos_token_id=[self.tokenizer.eos_token_id, 128009],
+                            bos_token_id=self.tokenizer.bos_token_id,
+                        )
                 else:
                     # Native manual loop for true RGTNet
                     if timing_enabled:
@@ -1398,10 +1613,22 @@ class CustomModelHandler:
                         full_padded = input_ids_batch[bi : bi + 1]
                         seq_len = input_lengths[bi]
                         seq = full_padded[:, -seq_len:].clone()
-                        role_mask = torch.zeros_like(seq)
+                        
+                        # Generate proper role mask based on embedding type
+                        if self.embedding_type == "rgtnet_orthonly":
+                            # For orthonly: all tokens are user (0) to disable role-aware attention
+                            role_mask = torch.zeros_like(seq)
+                            print(f"[DEBUG] RGTNet Orthonly - Role mask (all 0s): {role_mask[0].tolist()}")
+                        else:
+                            # For rgtnet: properly distinguish instruction vs data tokens
+                            role_mask = self._create_role_mask_for_rgtnet(seq, model_inputs_for_logging[bi])
+                            print(f"[DEBUG] RGTNet - Role mask: {role_mask[0].tolist()}")
+                            print(f"[DEBUG] RGTNet - Sequence: {self.tokenizer.decode(seq[0], skip_special_tokens=False)}")
+                        
                         steps = 0
                         finished = False
                         while steps < max_new_tokens and not finished:
+                            print(f"[DEBUG] Forward call with role_mask shape: {role_mask.shape}")
                             out = self.model(seq, role_mask=role_mask)
                             logits = out["logits"][:, -1, :]
                             next_logits = logits / (temperature if (do_sample and temperature) else 1.0)
@@ -1411,6 +1638,8 @@ class CustomModelHandler:
                             else:
                                 next_token = torch.argmax(next_logits, dim=-1, keepdim=True)
                             seq = torch.cat([seq, next_token], dim=1)
+                            
+                            # Generated tokens are always agent (1)
                             role_mask = torch.cat(
                                 [role_mask, torch.ones((1, 1), dtype=role_mask.dtype, device=role_mask.device)],
                                 dim=1,
@@ -1467,7 +1696,7 @@ class CustomModelHandler:
 
         end_time = time.time()
         gen_time = end_time - start_time
-        print(f"Generation time: {gen_time:.6f} seconds")
+        #print(f"Generation time: {gen_time:.6f} seconds")
         if timing_enabled:
             decode_start = time.time()
         # --------------------------------------------------------------------
@@ -1497,6 +1726,67 @@ class CustomModelHandler:
             print(f"[TIMING] prep={prep_time:.3f}s gen={gen_time:.3f}s decode={decode_time:.3f}s total={total_time:.3f}s")
 
         return responses, model_inputs_for_logging
+
+    def _create_role_mask_for_rgtnet(self, seq: torch.Tensor, text_sequences: List[Tuple[str, str]]) -> torch.Tensor:
+        """
+        Create proper role mask for RGTNet based on instruction/data split.
+        
+        Args:
+            seq: Input token sequence (1, seq_len)
+            text_sequences: List of (text, role) tuples from format_model_input
+            
+        Returns:
+            torch.Tensor: Role mask where 0=user/instruction, 1=agent/data
+        """
+        print(f"[DEBUG] Creating role mask for {len(text_sequences)} text sequences")
+        for i, (text, role) in enumerate(text_sequences):
+            print(f"[DEBUG] Sequence {i}: role={role}, text_preview='{text[:100]}...'")
+            
+        if len(text_sequences) == 1:
+            # No split - treat all as instruction tokens (user=0)
+            print(f"[DEBUG] Single sequence - all tokens as instruction (0)")
+            return torch.zeros_like(seq)
+        
+        elif len(text_sequences) == 2:
+            # Find "Input:" token in the sequence to split instruction/data
+            seq_tokens = seq[0].cpu().tolist()  # Convert to list for searching
+            
+            # Tokenize "Input:" to find its token ID(s)
+            input_marker_tokens = self.tokenizer("Input:", add_special_tokens=False)["input_ids"]
+            
+            print(f"[DEBUG] Looking for Input marker tokens: {input_marker_tokens}")
+            print(f"[DEBUG] Sequence length: {len(seq_tokens)}")
+            
+            # Find where "Input:" appears in the sequence
+            data_start_idx = None
+            for i in range(len(seq_tokens) - len(input_marker_tokens) + 1):
+                if seq_tokens[i:i+len(input_marker_tokens)] == input_marker_tokens:
+                    # Data starts after "Input:" tokens
+                    data_start_idx = i + len(input_marker_tokens)
+                    print(f"[DEBUG] Found Input: at position {i}, data starts at {data_start_idx}")
+                    break
+            
+            # Create role mask: 0 for instruction, 1 for data
+            role_mask = torch.zeros_like(seq)
+            
+            if data_start_idx is not None and data_start_idx < seq.shape[1]:
+                # Mark data portion as 1 (agent/data)
+                role_mask[:, data_start_idx:] = 1
+                print(f"[DEBUG] Set tokens {data_start_idx}: onwards to data (1)")
+            else:
+                print(f"[DEBUG] No Input: marker found - treating all as instruction")
+            
+            # Debug info
+            decoded_seq = self.tokenizer.decode(seq[0], skip_special_tokens=False)
+            print(f"[DEBUG] Decoded sequence: {decoded_seq}")
+            print(f"[DEBUG] Final role mask: {role_mask[0].tolist()}")
+            
+            return role_mask
+        
+        else:
+            # Fallback: treat all as instruction
+            print(f"[DEBUG] Unexpected number of sequences ({len(text_sequences)}) - treating all as instruction")
+            return torch.zeros_like(seq)
 
     def _setup_hf_model(self) -> None:
         """

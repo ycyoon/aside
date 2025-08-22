@@ -54,6 +54,7 @@ def run_smoke(args):
             torch.backends.cuda.enable_flash_sdp(True)
         print(f"[GPU] Optimizations enabled: TF32=True, Flash_SDPA=attempted")
 
+    model_load_start = time.time()
     handler = CustomModelHandler(
         checkpoint_path=args.model_dir,
         instruct_model_path=args.model_dir,  # base_model param reused for size inference if needed
@@ -66,6 +67,9 @@ def run_smoke(args):
         model_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
         max_token_len=args.max_input_len,
     )
+    model_load_end = time.time()
+    model_load_time = model_load_end - model_load_start
+    print(f"[METRIC] model_load_time={model_load_time:.3f}s")
 
     # Build batched inputs (truncate to batch_size if requested smaller than PROMPTS length)
     use_prompts = PROMPTS[: args.batch_size]
@@ -74,40 +78,77 @@ def run_smoke(args):
 
     print(f"[Smoke] Running batch of {len(use_prompts)} prompts | embedding_type={args.embedding_type}")
 
-    # Warmup run to avoid cold start effects
-    print("[Smoke] Warmup run...")
+    # Warmup run (short) to populate caches
+    print("[Smoke] Warmup run (4 tokens)...")
     try:
-        _, _ = handler.call_model_api_batch(
+        handler.call_model_api_batch(
             system_instructions[:1],
-            user_instructions[:1], 
+            user_instructions[:1],
             max_new_tokens=4,
             do_sample=False,
         )
     except Exception as e:
         print(f"[WARN] Warmup failed: {e}")
 
-    # Actual timed run
-    start_time = time.time()
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()  # Wait for GPU operations to complete
-        gpu_start = time.time()
-    
-    try:
-        responses, _ = handler.call_model_api_batch(
-            system_instructions,
-            user_instructions,
-            max_new_tokens=args.max_new_tokens,
+    # Choose generation path
+    if args.realtime_progress:
+        print("[Smoke] Real-time progress enabled: manual incremental generation")
+        start_time = time.time()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+            gpu_start = time.time()
+        try:
+            responses, gen_counts, tfft = generate_with_progress(
+                handler,
+                system_instructions,
+                user_instructions,
+                max_new_tokens=args.max_new_tokens,
+                do_sample=bool(args.do_sample),
+                temperature=args.temperature,
+            )
+        except Exception as e:
+            print(f"[FAIL] Exception during realtime generation: {e}")
+            raise
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        total_time = time.time() - start_time
+        gpu_time = time.time() - gpu_start if torch.cuda.is_available() else total_time
+        generated_tokens_each = gen_counts
+    else:
+        # Original path: approximate TFFT separately, then one-shot generation
+        print("[Smoke] Measuring TFFT (approx via 1-token generate)...")
+        tfft = measure_tfft(
+            handler,
+            system_instructions[0],
+            user_instructions[0],
             do_sample=bool(args.do_sample),
             temperature=args.temperature,
         )
-    except Exception as e:
-        print(f"[FAIL] Exception during batch generation: {e}")
-        raise
-    
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()  # Wait for GPU operations to complete
-    total_time = time.time() - start_time
-    gpu_time = time.time() - gpu_start if torch.cuda.is_available() else total_time
+        if not torch.isnan(torch.tensor(tfft)):
+            print(f"[METRICS] TFFT={tfft:.3f}s (approx)")
+        else:
+            print("[METRICS] TFFT=NaN (measurement failed)")
+        start_time = time.time()
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+            gpu_start = time.time()
+        try:
+            responses, _ = handler.call_model_api_batch(
+                system_instructions,
+                user_instructions,
+                max_new_tokens=args.max_new_tokens,
+                do_sample=bool(args.do_sample),
+                temperature=args.temperature,
+            )
+        except Exception as e:
+            print(f"[FAIL] Exception during batch generation: {e}")
+            raise
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        total_time = time.time() - start_time
+        gpu_time = time.time() - gpu_start if torch.cuda.is_available() else total_time
+        # Re-tokenize for counts below
+        generated_tokens_each = None
 
     # Performance metrics
     gen_token_counts = []
@@ -122,6 +163,7 @@ def run_smoke(args):
     total_gen = sum(gen_token_counts)
     total_inp = sum(approx_input_tokens)
     toks_per_sec = total_gen / total_time if total_time > 0 else 0.0
+    toks_per_sec_excl_tfft = total_gen / (total_time - tfft) if total_time > tfft > 0 else float('nan')
 
     if torch.cuda.is_available():
         torch.cuda.synchronize()
