@@ -612,45 +612,55 @@ class OrthogonalRoleAnalyzer:
     def run_analysis(self, output_dir):
         """Run analysis with proper native loading."""
         os.makedirs(output_dir, exist_ok=True)
-        
+
         all_metrics = {}
+        all_model_embeddings = {}  # collect per-model embeddings for visualization
         layers_to_extract = None
-        
+
         for model_config in tqdm(self.models_config, desc="Processing models"):
             model_name = model_config["name"]
             print(f"\nProcessing {model_name}...")
-            
-            # Use the native loading method instead of CustomModelHandler
-            handler = self._load_model_handler(model_config)  # 이미 정의된 메서드 사용
-            
-            # Verify what was actually loaded
-            if hasattr(handler, 'model') and hasattr(handler.model, 'is_native_rgtnet'):
-                is_native = getattr(handler.model, 'is_native_rgtnet', False)
-                print(f"[MODEL CHECK] {model_name} - Native RGTNet: {is_native}")
-            
-            # Extract embeddings
-            # 모델의 처음, 중간, 끝 레이어를 layers_to_extract에 저장한다.
-            num_layers = handler.model.config.num_hidden_layers
-            layers_to_extract = [0, num_layers // 2, num_layers - 1]
+
+            handler = self._load_model_handler(model_config)
+
+            # Model type info
+            is_native = getattr(getattr(handler, "model", None), "is_native_rgtnet", False)
+            print(f"[MODEL CHECK] {model_name} - Native RGTNet: {is_native}")
+
+            # Determine number of transformer layers robustly
+            num_layers = None
+            if hasattr(handler.model, "config") and hasattr(handler.model.config, "num_hidden_layers"):
+                num_layers = handler.model.config.num_hidden_layers
+            elif hasattr(handler.model, "layers"):
+                num_layers = len(handler.model.layers)
+            elif hasattr(handler.model, "model") and hasattr(handler.model.model, "layers"):
+                num_layers = len(handler.model.model.layers)
+            else:
+                num_layers = 32  # sensible default
+
+            # Choose 0 (embedding), middle, last layer indices
+            layers_to_extract = [0, max(1, num_layers // 2), max(1, num_layers - 1)]
 
             embeddings_data = self.extract_same_word_embeddings(handler, layers_to_extract)
-            # Calculate orthogonality metrics
+            all_model_embeddings[model_name] = embeddings_data
+
+            # Metrics
             metrics = self.calculate_orthogonality_metrics(embeddings_data, layers_to_extract)
             all_metrics[model_name] = metrics
-            
-            # Clean up GPU memory
+
+            # Cleanup
             del handler
             torch.cuda.empty_cache()
-        
+
         print(f"📊 Using common layers for visualization: {sorted(layers_to_extract)}")
-        
-        # Create visualizations (use only common layers)
+
+        # Visualizations
         viz_path = os.path.join(output_dir, "orthogonal_role_separation.png")
         self.create_visualization(all_model_embeddings, layers_to_extract, viz_path)
-        
+
         metrics_path = os.path.join(output_dir, "orthogonality_metrics.png")
         self.create_metrics_plot(all_metrics, layers_to_extract, metrics_path)
-        
+
         # Save raw data
         data_path = os.path.join(output_dir, "orthogonal_analysis_data.pkl")
         with open(data_path, "wb") as f:
@@ -660,10 +670,8 @@ class OrthogonalRoleAnalyzer:
                 "layers": layers_to_extract,
                 "test_words": self.test_words
             }, f)
-        
-        # Generate summary report
+
         self._generate_summary_report(all_metrics, layers_to_extract, output_dir)
-        
         print(f"Orthogonal role analysis complete! Results saved to {output_dir}")
         return all_model_embeddings, all_metrics, layers_to_extract
     
@@ -754,16 +762,18 @@ class OrthogonalRoleAnalyzer:
 
     def _load_native_rgtnet(self, model_config):
         """
-        Load native RGTNet using the native implementation to avoid false negatives.
-        """        
-
+        Load native RGTNet using the native implementation and wrap it with RGTNetModelHandler.
+        """
         model_dir = model_config["model_path"]
+        base_model = model_config.get("base_model")
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
 
+        # Prefer native rgtnet_config.json, else fallback to base HF config
         cfg_path = os.path.join(model_dir, "rgtnet_config.json")
-        with open(cfg_path) as f:
-            cfg = json.load(f)
+        if os.path.exists(cfg_path):
+            with open(cfg_path) as f:
+                cfg = json.load(f)
             args = SimpleNamespace(
                 vocab_size=cfg["vocab_size"],
                 d_model=cfg["d_model"],
@@ -782,12 +792,50 @@ class OrthogonalRoleAnalyzer:
                 mlp_bias=cfg.get("mlp_bias", False),
             )
             pad_id = cfg.get("pad_token_id", 0)
-        
+        else:
+            if not base_model:
+                raise RuntimeError("Missing base_model for native RGTNet fallback without rgtnet_config.json")
+            hf_cfg = AutoConfig.from_pretrained(base_model, trust_remote_code=True)
+            args = SimpleNamespace(
+                vocab_size=hf_cfg.vocab_size,
+                d_model=hf_cfg.hidden_size,
+                nhead=hf_cfg.num_attention_heads,
+                num_layers=hf_cfg.num_hidden_layers,
+                dim_feedforward=hf_cfg.intermediate_size,
+                dropout=0.1,
+                bias_delta=5.0,
+                max_seq_len=getattr(hf_cfg, "max_position_embeddings", 2048),
+                gradient_checkpointing=False,
+                num_key_value_heads=getattr(hf_cfg, "num_key_value_heads", None),
+                architecture_type=getattr(hf_cfg, "model_type", "llama"),
+                mlp_type="gated",
+                activation="silu",
+                attention_bias=False,
+                mlp_bias=False,
+            )
+            pad_id = getattr(hf_cfg, "pad_token_id", 0) or 0
+
+        # Tokenizer for text->ids
+        if not base_model:
+            raise RuntimeError("base_model is required to load tokenizer for native RGTNet")
+        tokenizer = AutoTokenizer.from_pretrained(base_model, trust_remote_code=True)
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+
+        # Build and load native model
         model = create_rgtnet(args, pad_idx=pad_id)
         model = load_rgtnet_checkpoint(model_dir, model, device=str(device))
         model = model.to(device=device, dtype=dtype).eval()
 
-        return {"type": "rgtnet_native", "model": model, "device": device, "dtype": dtype}
+        # Mark and add minimal compatibility fields
+        setattr(model, "is_native_rgtnet", True)
+        setattr(model, "device", device)
+        # Provide a minimal config shim so generic code can query num_hidden_layers
+        model.config = SimpleNamespace(num_hidden_layers=args.num_layers)
+
+        # Wrap in handler so upstream paths work
+        handler = RGTNetModelHandler(model, tokenizer, embedding_type="rgtnet")
+        return handler
 
     def _load_hf_causal_lm(self, model_config):
         """Load a standard HuggingFace Causal LM from a checkpoint directory."""
@@ -888,4 +936,3 @@ class OrthogonalRoleAnalyzer:
         # Wrap in RGTNetModelHandler
         handler = RGTNetModelHandler(model, tokenizer, embedding_type="rgtnet")
         return handler
-                                
