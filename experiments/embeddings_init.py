@@ -63,15 +63,17 @@ def rotate_embeddings_independently(embeds: torch.Tensor, alpha: float) -> torch
             rotated[i] = x
             continue
 
-        # 4) Normalize the orthogonal direction
-        n_ = u_perp / perp_norm
+    # 4) Normalize the orthogonal direction
+    n_ = u_perp / perp_norm
 
-        # 5) Rotate in the plane spanned by hat_x and n_
-        cos_a = torch.cos(torch.tensor(alpha, dtype=x.dtype, device=x.device))
-        sin_a = torch.sin(torch.tensor(alpha, dtype=x.dtype, device=x.device))
+    # 5) Rotate in the plane spanned by hat_x and n_
+    # Handle alpha=None by defaulting to 0.0 (no rotation)
+    _alpha = 0.0 if alpha is None else alpha
+    cos_a = torch.cos(torch.tensor(_alpha, dtype=x.dtype, device=x.device))
+    sin_a = torch.sin(torch.tensor(_alpha, dtype=x.dtype, device=x.device))
 
-        y = norm_x * (cos_a * hat_x + sin_a * n_)
-        rotated[i] = y
+    y = norm_x * (cos_a * hat_x + sin_a * n_)
+    rotated[i] = y
 
     return rotated
 
@@ -113,6 +115,16 @@ def generate_isoclinic_rotation_matrix(dim, alpha, device=None, dtype=None):
         #         [ 0.,  0.,  0., -1.],
         #         [ 0.,  0.,  1.,  0.]])
     """
+    # Gracefully handle alpha=None by defaulting to 0.0 (identity/no rotation)
+    if alpha is None:
+        # Minimal logging to aid debugging without crashing
+        print("[embeddings_init] rotation alpha is None; defaulting to 0.0 (identity rotation)")
+        alpha = 0.0
+
+    # Ensure dtype has a sane default if not provided
+    if dtype is None:
+        dtype = torch.float32
+
     alpha_t = torch.tensor(alpha, device=device, dtype=dtype)
     cos_alpha = torch.cos(alpha_t)
     sin_alpha = torch.sin(alpha_t)
@@ -120,9 +132,11 @@ def generate_isoclinic_rotation_matrix(dim, alpha, device=None, dtype=None):
     alpha_t_clone = alpha_t.clone().to(device)  # or .to(device) if needed to ensure it's not meta
     print(f"alpha_t: {alpha_t_clone.cpu().item()} (dtype: {alpha_t_clone.dtype})")
 
-
     M = torch.eye(dim, device=device, dtype=dtype)
     for i in range(0, dim, 2):
+        # Safety guard for odd dimensions
+        if i + 1 >= dim:
+            break
         M[i, i]     = cos_alpha
         M[i, i+1]   = -sin_alpha
         M[i+1, i]   = sin_alpha
@@ -168,8 +182,9 @@ def rotate_embeddings_in_multiple_planes(embeds: torch.Tensor, alpha: float, sil
     device = embeds.device
     dtype = embeds.dtype
 
-    # Compute cosine and sine once
-    alpha_tensor = torch.tensor(alpha, device=device, dtype=dtype)
+    # Compute cosine and sine once (handle alpha=None)
+    _alpha = 0.0 if alpha is None else alpha
+    alpha_tensor = torch.tensor(_alpha, device=device, dtype=dtype)
     cos_a = torch.cos(alpha_tensor)
     sin_a = torch.sin(alpha_tensor)
     

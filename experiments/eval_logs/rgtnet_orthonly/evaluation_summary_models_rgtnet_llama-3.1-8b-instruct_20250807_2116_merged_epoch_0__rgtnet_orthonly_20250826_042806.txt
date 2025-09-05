@@ -1,0 +1,21 @@
+=== Evaluation Summary ===
+# Hyperparameters / Run Config
+model_name: models/rgtnet_llama-3.1-8b-instruct_20250807_2116/merged_epoch_0/
+base_model: None
+embedding_type: rgtnet_orthonly
+datasets: ['all']
+seeds_to_run: 1
+do_sample: True
+batch_size: 32
+use_deepspeed: False
+output_dir: /ceph_data/ycyoon/work/aside/experiments/eval_logs/rgtnet_orthonly
+timestamp: 20250826_042806
+
+# Metrics (%):
+TensorTrust: mean=13.33, std=0.00
+purple: mean=52.98, std=0.00
+gandalf: mean=0.00, std=0.00
+rules: mean=64.56, std=0.00
+hackerprompt: mean=1.00, std=0.00
+bipia-text: mean=0.18, std=0.00
+bipia-code: mean=0.15, std=0.00

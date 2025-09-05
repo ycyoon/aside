@@ -1,0 +1,21 @@
+{
+    "model_name": "microsoft/DialoGPT-small",
+    "model_type": "rgtnet",
+    "output_dir": "models/rgtnet_small_test",
+    "data_file": "data/SEP_dataset.json",
+    "validation_split": 0.1,
+    "epochs": 2,
+    "batch_size": 4,
+    "gradient_accumulation_steps": 2,
+    "lr": 5e-5,
+    "warmup_ratio": 0.1,
+    "max_length": 256,
+    "max_iters": 100,
+    "eval_steps": 50,
+    "save_steps": 50,
+    "logging_steps": 10,
+    "deepspeed": false,
+    "role_separation_alpha": 0.1,
+    "orthogonality_alpha": 0.05,
+    "comment": "Small model configuration for testing role separation learning with frequent monitoring"
+}

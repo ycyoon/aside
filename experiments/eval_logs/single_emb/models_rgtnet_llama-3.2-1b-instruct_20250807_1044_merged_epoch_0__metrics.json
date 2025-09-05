@@ -1,0 +1,30 @@
+{
+    "TensorTrust": {
+        "mean": 0.0,
+        "std": 0.0
+    },
+    "purple": {
+        "mean": 2.1052631578947367,
+        "std": 0.0
+    },
+    "gandalf": {
+        "mean": 0.0,
+        "std": 0.0
+    },
+    "rules": {
+        "mean": 52.63157894736842,
+        "std": 0.0
+    },
+    "hackerprompt": {
+        "mean": 0.0,
+        "std": 0.0
+    },
+    "bipia-text": {
+        "mean": 5.3938492063492065,
+        "std": 0.0
+    },
+    "bipia-code": {
+        "mean": 0.0,
+        "std": 0.0
+    }
+}

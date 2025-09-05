@@ -1,0 +1,31 @@
+Orthogonal Role Analysis Summary
+==================================================
+
+Test conducted on 72 words/phrases
+Layers analyzed: [0, 14, 27]
+Models compared: ['ASIDE']
+
+
+ASIDE Results:
+------------------------------
+Analyzed layers for ASIDE: [0, 14, 27]
+
+Layer 0:
+  Mean Cosine Similarity: 0.0002 ± 0.0001
+  Mean Euclidean Distance: 1.1204 ± 0.2286
+  Silhouette Score: 0.0401
+
+Layer 14:
+  Mean Cosine Similarity: 0.9864 ± 0.0738
+  Mean Euclidean Distance: 2244.3884 ± 1923.8745
+  Silhouette Score: 0.0525
+
+Layer 27:
+  Mean Cosine Similarity: 0.9445 ± 0.0817
+  Mean Euclidean Distance: 584.7319 ± 460.8674
+  Silhouette Score: 0.0331
+
+Trends from Layer 0 to 27:
+  Cosine Similarity Change: +0.9443 (convergence)
+  Distance Change: +583.6115 (separation)
+

@@ -1,0 +1,1 @@
+../RGTNet/model_config.py

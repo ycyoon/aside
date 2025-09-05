@@ -1,0 +1,21 @@
+{
+    "perplexity": 216980.625,
+    "bleu": 0.0,
+    "rouge1": 0.0,
+    "rouge2": 0.0,
+    "rougeL": 0.0,
+    "sample_generations": [
+        {
+            "prompt": "system\n\nCutting Knowledge Date: December 2023\nToday Date: 02 Sep 2025\n\nuser\n\nClassify the sentiment: I love this movie!assistant\n\nPositive!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!",
+            "generated_text": " Laughry blendytheSpotalf nailellant Na Collinsinder ent Inhal anninderysisPSbstingRY"
+        },
+        {
+            "prompt": "system\n\nCutting Knowledge Date: December 2023\nToday Date: 02 Sep 2025\n\nuser\n\nConvert the text in to a question\n\nInput: The meeting will be held in the boardroom.assistant\n\nWhere will the meeting be held?!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!",
+            "generated_text": "\u0641\u062a fatcrest netLOODalf proof Thing anymore Dissmasibil sulfirthae nailisonSpoing alone"
+        },
+        {
+            "prompt": "system\n\nCutting Knowledge Date: December 2023\nToday Date: 02 Sep 2025\n\nuser\n\nTrack the highest peak of the stock prices in one day.\n\nInput: On October 27th, the stock price of Apple Inc. opened at $122.25 and closed at $113.00 with the highest daily peak of $126.00assistant\n\nHighest peak of the stock price on October 27th: $126.00!!!!!!!!!!!!!!!!!!!!!!!!!!",
+            "generated_text": "\u0641\u062aInterceptoravra Netmt Russell\u6069 respectivelyadeshaddyde enf summonsuffhma BetISONbst Suff Jeff"
+        }
+    ]
+}

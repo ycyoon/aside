@@ -1,0 +1,21 @@
+=== Evaluation Summary ===
+# Hyperparameters / Run Config
+model_name: models/rgtnet_llama-3.2-1b-instruct_20250807_1044/merged_epoch_0/
+base_model: None
+embedding_type: ise
+datasets: ['all']
+seeds_to_run: 1
+do_sample: True
+batch_size: 32
+use_deepspeed: False
+output_dir: /ceph_data/ycyoon/work/aside/experiments/eval_logs/ise
+timestamp: 20250825_124026
+
+# Metrics (%):
+TensorTrust: mean=0.00, std=0.00
+purple: mean=0.00, std=0.00
+gandalf: mean=0.00, std=0.00
+rules: mean=52.63, std=0.00
+hackerprompt: mean=0.00, std=0.00
+bipia-text: mean=0.00, std=0.00
+bipia-code: mean=0.00, std=0.00

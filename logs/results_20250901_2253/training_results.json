@@ -1,0 +1,13 @@
+{
+  "best_val_loss": Infinity,
+  "final_train_loss": 12.998752779960633,
+  "final_val_loss": Infinity,
+  "training_stats": {
+    "train_losses": [],
+    "val_losses": [],
+    "learning_rates": [],
+    "epochs": []
+  },
+  "total_epochs": 1,
+  "early_termination": true
+}
