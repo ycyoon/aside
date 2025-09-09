@@ -3,13 +3,33 @@ Orthogonal Role Analysis Summary
 
 Test conducted on 72 words/phrases
 Layers analyzed: [0, 14, 27]
-Models compared: ['ASIDE']
+Models compared: ['Vanilla LM', 'ASIDE', 'Ours (RGTNet)']
+
+
+Vanilla LM Results:
+------------------------------
+Layer 0:
+  Mean Cosine Similarity: 1.0000 ± 0.0000
+  Mean Euclidean Distance: 0.0000 ± 0.0000
+  Silhouette Score: -0.0139
+
+Layer 14:
+  Mean Cosine Similarity: 1.0000 ± 0.0000
+  Mean Euclidean Distance: 0.0000 ± 0.0000
+  Silhouette Score: -0.0139
+
+Layer 27:
+  Mean Cosine Similarity: 1.0000 ± 0.0000
+  Mean Euclidean Distance: 0.0000 ± 0.0000
+  Silhouette Score: -0.0139
+
+Trends from Layer 0 to 27:
+  Cosine Similarity Change: -0.0000 (divergence)
+  Distance Change: +0.0000 (convergence)
 
 
 ASIDE Results:
 ------------------------------
-Analyzed layers for ASIDE: [0, 14, 27]
-
 Layer 0:
   Mean Cosine Similarity: 0.0002 ± 0.0001
   Mean Euclidean Distance: 1.1204 ± 0.2286
@@ -28,4 +48,26 @@ Layer 27:
 Trends from Layer 0 to 27:
   Cosine Similarity Change: +0.9443 (convergence)
   Distance Change: +583.6115 (separation)
+
+
+Ours (RGTNet) Results:
+------------------------------
+Layer 0:
+  Mean Cosine Similarity: -0.0551 ± 0.0151
+  Mean Euclidean Distance: 1.0245 ± 0.1723
+  Silhouette Score: 0.2822
+
+Layer 14:
+  Mean Cosine Similarity: 0.6651 ± 0.0676
+  Mean Euclidean Distance: 9.7154 ± 1.2934
+  Silhouette Score: 0.3869
+
+Layer 27:
+  Mean Cosine Similarity: 0.5332 ± 0.0198
+  Mean Euclidean Distance: 22.1023 ± 0.5557
+  Silhouette Score: 0.7978
+
+Trends from Layer 0 to 27:
+  Cosine Similarity Change: +0.5883 (convergence)
+  Distance Change: +21.0778 (separation)
 

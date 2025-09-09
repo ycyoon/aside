@@ -15,24 +15,28 @@ import argparse
 import json
 import numpy as np
 import torch
+import types  # FIX: for MethodType
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.decomposition import PCA
-from sklearn.manifold import TSNE
 from sklearn.metrics import silhouette_score
 import pandas as pd
 from tqdm import tqdm
 import pickle
 from datetime import datetime
 from transformers import AutoTokenizer, AutoConfig, AutoModelForCausalLM
-import os, json, torch
 from types import SimpleNamespace
-from transformers import AutoConfig
 # Use your native implementation
 from rgtnet_model import create_model as create_rgtnet, load_checkpoint as load_rgtnet_checkpoint
 import glob
-# NOTE: Native RGTNet import kept for reference, but we now load via standard HF models for RGTNet checkpoints
-# from rgtnet_model import RoleAwareTransformerDecoder
+from rgtnet_loader import load_rgtnet_model
+# Add parent directory to path
+if "../.." not in sys.path:
+    sys.path.append("../..")
+
+from model_api import CustomModelHandler
+from typing import Optional, Dict, Any
+
 
 # Add RGTNet ModelHandler
 class RGTNetModelHandler:
@@ -42,77 +46,99 @@ class RGTNetModelHandler:
         self.supports_role_inputs = True
         self.embedding_type = embedding_type  # Set the correct embedding type
         self._hidden_states = []
-        
+
+    def _extract_logits_and_last_hidden(self, outputs):
+        """Normalize various native outputs to (logits, last_hidden_state)."""
+        logits = None
+        last_hidden = None
+
+        # dict-like
+        if isinstance(outputs, dict):
+            logits = outputs.get('logits', None)
+            last_hidden = outputs.get('last_hidden_state', None)
+
+        # HF-like object with attrs
+        if logits is None and hasattr(outputs, 'logits'):
+            logits = outputs.logits
+        if last_hidden is None and hasattr(outputs, 'last_hidden_state'):
+            last_hidden = outputs.last_hidden_state
+
+        # raw tensor => treat as logits
+        if logits is None and torch.is_tensor(outputs):
+            logits = outputs
+
+        # Fallbacks
+        if last_hidden is None:
+            last_hidden = logits
+
+        return logits, last_hidden
+
     def encode_batch(self, texts, role_mask):
         """Encode batch of texts with role information"""
         inputs = self.tokenizer(texts, return_tensors="pt", padding=True, truncation=True)
         input_ids = inputs.input_ids.to(self.model.device)
-        
+
         # Create proper role_mask if needed
         if role_mask is not None:
             if isinstance(role_mask, int):
                 role_mask = torch.full_like(input_ids, role_mask)
             role_mask = role_mask.to(self.model.device)
-        
+
         with torch.no_grad():
-            # Native RGTNet uses different forward signature than HF models
             outputs = self.model(input_ids=input_ids, role_mask=role_mask)
-            return outputs.last_hidden_state
-            
+            _, last_hidden = self._extract_logits_and_last_hidden(outputs)
+            return last_hidden
+
     def __call__(self, input_ids, role_mask=None, attention_mask=None, output_hidden_states=False, return_dict=True):
         """Call the model and collect hidden states for analysis"""
         self._hidden_states = []
-        
+
         # Register hooks to collect intermediate layer outputs
         hooks = []
         if output_hidden_states and hasattr(self.model, 'layers'):
-            def hook_fn(module, input, output):
-                # Store the output (src) from each layer
-                self._hidden_states.append(output.detach().clone())
-            
+            def hook_fn(module, _in, out):
+                # Support tuple outputs
+                if isinstance(out, (tuple, list)):
+                    out = out[0]
+                self._hidden_states.append(out.detach().clone())
+
             for layer in self.model.layers:
                 hooks.append(layer.register_forward_hook(hook_fn))
-        
+
         try:
-            # Call the native model
-            outputs = self.model(input_ids=input_ids, role_mask=role_mask, attention_mask=attention_mask)
-            
-            # Create HF-compatible output format
-            if return_dict:
-                # Add embedding layer as first hidden state
-                if output_hidden_states:
-                    # Get embedding output as first layer
-                    embed_output = self.model.embedding(input_ids, role_mask)
-                    if self.model.pos_encoder is not None:
-                        pos_ids = torch.arange(0, input_ids.size(-1), device=input_ids.device).unsqueeze(0).expand(input_ids.size(0), -1)
-                        embed_output = embed_output + self.model.pos_encoder(pos_ids)
-                    
-                    all_hidden_states = [embed_output] + self._hidden_states
-                    if hasattr(outputs, 'logits'):
-                        # Add final output as last hidden state
-                        all_hidden_states.append(outputs['logits'])
-                    
-                    class OutputWithHiddenStates:
-                        def __init__(self, logits, hidden_states):
-                            self.logits = logits
-                            self.hidden_states = hidden_states
-                    
-                    return OutputWithHiddenStates(outputs.get('logits', outputs), all_hidden_states)
-                else:
-                    return outputs
-            else:
-                return outputs
-                
+            outputs_raw = self.model(input_ids=input_ids, role_mask=role_mask, attention_mask=attention_mask)
+            logits_tensor, last_hidden_tensor = self._extract_logits_and_last_hidden(outputs_raw)
+
+            if not output_hidden_states:
+                # Minimal HF-like shim without hidden states
+                class OutputNoHidden:
+                    def __init__(self, logits):
+                        self.logits = logits
+                        self.hidden_states = None
+                return OutputNoHidden(logits_tensor)
+
+            # Build first hidden state from embeddings
+            embed_output = self.model.embedding(input_ids, role_mask)
+            if getattr(self.model, "pos_encoder", None) is not None:
+                pos_ids = torch.arange(0, input_ids.size(-1), device=input_ids.device).unsqueeze(0).expand(input_ids.size(0), -1)
+                embed_output = embed_output + self.model.pos_encoder(pos_ids)
+
+            # Compose all hidden states: [embedding] + per-layer hooks + [final]
+            all_hidden_states = [embed_output] + self._hidden_states
+            if last_hidden_tensor is not None and (len(all_hidden_states) == 0 or all_hidden_states[-1] is not last_hidden_tensor):
+                all_hidden_states.append(last_hidden_tensor)
+
+            class OutputWithHiddenStates:
+                def __init__(self, logits, hidden_states):
+                    self.logits = logits
+                    self.hidden_states = hidden_states
+
+            return OutputWithHiddenStates(logits_tensor, all_hidden_states)
+
         finally:
-            # Remove hooks
             for hook in hooks:
                 hook.remove()
-from rgtnet_loader import load_rgtnet_model
-# Add parent directory to path
-if "../.." not in sys.path:
-    sys.path.append("../..")
 
-from model_api import CustomModelHandler
 
 
 class OrthogonalRoleAnalyzer:
@@ -120,14 +146,18 @@ class OrthogonalRoleAnalyzer:
     Analyzes orthogonal relationships between same words in different roles across layers.
     """
     
-    def __init__(self, models_config):
-        """
-        Initialize the analyzer with model configurations.
-        
-        Args:
-            models_config (list): List of model configurations
-        """
+    def __init__(self, models_config, rgtnet_cfg: Optional[Dict[str, Any]] = None, *args, **kwargs):
+        # 기존 초기화 로직이 있다면 유지하고, 아래 두 줄만 추가해 주세요.
         self.models_config = models_config
+        # 기본값(dict) – runner에서 넘겨주지 않은 경우를 대비
+        self.rgtnet_cfg = rgtnet_cfg or {
+            "RGTNET_FORCE_BASIS": "rand",
+            "RGTNET_ALPHA_OVERRIDE": 0.8,
+            "RGTNET_ROTATION_MODE": "pure",
+            "RGTNET_MIN_DELTA": 0.01,
+            "RGTNET_FALLBACK_RANDOM": True,
+            "RGTNET_ASSERT_MIN_ROT_DELTA": 0.002,
+        }
         self.test_words = self._create_test_words()
         
     def _create_test_words(self):
@@ -533,12 +563,12 @@ class OrthogonalRoleAnalyzer:
                     ax.set_ylabel(f"{model_name}\n\nPC2", fontsize=12)
         
         # Set main title
-        plt.suptitle("Comparison of Token Role Separation Across Layers", 
-                    fontsize=16, y=0.98)
+        #plt.suptitle("Comparison of Token Role Separation Across Layers", 
+        #            fontsize=16, y=0.98)
         
         # Add subtitle
-        fig.text(0.5, 0.02, "Illustrative 2D Subspace", 
-                ha='center', fontsize=12, style='italic')
+        #fig.text(0.5, 0.02, "Illustrative 2D Subspace", 
+        #        ha='center', fontsize=12, style='italic')
         
         plt.tight_layout()
         plt.subplots_adjust(top=0.92, bottom=0.08)
@@ -760,20 +790,226 @@ class OrthogonalRoleAnalyzer:
         except Exception:
             return False
 
+    def _cfg(self, key: str, default=None, cast: str | None = None):
+        """
+        Fetch config value from self.rgtnet_cfg only (no environment).
+        cast: "int" | "float" | "bool"
+        """
+        v = self.rgtnet_cfg.get(key, default)
+        if cast == "float":
+            try:
+                return float(v)
+            except Exception:
+                return float(default) if default is not None else None
+        if cast == "int":
+            try:
+                return int(v)
+            except Exception:
+                return int(default) if default is not None else None
+        if cast == "bool":
+            if isinstance(v, str):
+                return v.strip().lower() in ("1", "true", "yes", "y", "t")
+            return bool(v)
+        return v
+
+    def _inject_embedding_rotation(self, model, alpha_override=None):
+        """
+        Inject/configure embedding rotation for analysis.
+        alpha_override: optional float; if None, use self.rgtnet_cfg['RGTNET_ALPHA_OVERRIDE'].
+        """
+        # Read config (no env)
+        force_basis = self._cfg("RGTNET_FORCE_BASIS", "rand")
+        if alpha_override is None:
+            alpha_override = self._cfg("RGTNET_ALPHA_OVERRIDE", 0.3, "float")
+        else:
+            alpha_override = float(alpha_override)
+        rot_mode = self._cfg("RGTNET_ROTATION_MODE", "pure")
+        min_delta = self._cfg("RGTNET_MIN_DELTA", 0.0, "float")
+        fallback_rand = self._cfg("RGTNET_FALLBACK_RANDOM", False, "bool")
+        assert_min = self._cfg("RGTNET_ASSERT_MIN_ROT_DELTA", 0.0, "float")
+
+        emb = getattr(model, "embedding", None)
+        if emb is None:
+            print("[RGTNet Native] ❌ No embedding module found; cannot inject rotation")
+            return False
+
+        # 1) layer0에서 U 추출
+        U = None
+        try:
+            attn0 = model.layers[0].self_attn if hasattr(model, "layers") else None
+            U = getattr(attn0, "U", None)
+            if isinstance(U, torch.nn.Parameter):
+                U = U.data
+        except Exception:
+            U = None
+
+        if U is not None:
+            print(f"[RGTNet Native] rotation basis found: {tuple(U.shape)}")
+        else:
+            print("[RGTNet Native] ⚠️ rotation basis U not found")
+
+        # 2) 항상 래핑(네이티브 set_alpha가 있어도 무조건 주입)
+        if not hasattr(emb, "_orig_forward"):
+            emb._orig_forward = emb.forward  # 보존
+
+        orig_forward = emb._orig_forward
+
+        # 버퍼/상태 등록
+        if not hasattr(emb, "_rotation_injected"):
+            emb.register_buffer("_rot_alpha", torch.tensor(float(alpha_override)))
+            emb._rotation_injected = True
+        else:
+            emb._rot_alpha.fill_(float(alpha_override))
+        emb._rot_basis = U
+        emb._force_mode = force_basis
+        emb._rot_mode = rot_mode
+
+        def _make_forced_basis(D: int, target_device, target_dtype, H: int = None):
+            """
+            Create an orthogonal basis without using bf16 CUDA QR (unsupported).
+            Compute QR on CPU float32, then cast/move to target.
+            """
+            cpu = torch.device("cpu")
+            if force_basis == "negi":
+                if H and D % H == 0:
+                    dh = D // H
+                    return -torch.eye(dh, device=target_device, dtype=target_dtype).unsqueeze(0).expand(H, dh, dh).contiguous()
+                return -torch.eye(D, device=target_device, dtype=target_dtype)
+
+            if force_basis == "rand":
+                if H and D % H == 0:
+                    dh = D // H
+                    Qs = []
+                    for _ in range(H):
+                        A = torch.randn(dh, dh, device=cpu, dtype=torch.float32)
+                        q, _ = torch.linalg.qr(A)  # CPU fp32
+                        Qs.append(q.to(device=target_device, dtype=target_dtype))
+                    return torch.stack(Qs, dim=0).contiguous()
+                A = torch.randn(D, D, device=cpu, dtype=torch.float32)
+                q, _ = torch.linalg.qr(A)  # CPU fp32
+                return q.to(device=target_device, dtype=target_dtype).contiguous()
+            return None
+
+        def rotated_forward(self, input_ids, role_mask=None, *args, **kwargs):
+            # 네이티브 role_mask 경로는 무시: base embedding만 얻음
+            try:
+                x = orig_forward(input_ids, role_mask=None, *args, **kwargs)  # [B,T,D]
+            except TypeError:
+                x = orig_forward(input_ids, *args, **kwargs)
+
+            if role_mask is None or float(self._rot_alpha.item()) == 0.0:
+                return x
+
+            B, T, D = x.shape
+            m = role_mask.to(x.device).unsqueeze(-1).to(x.dtype)
+            U_local = self._rot_basis
+
+            # 강제 basis 생성/선택
+            if self._force_mode:
+                H = None
+                if isinstance(U_local, torch.Tensor) and U_local.dim() == 3:
+                    H = U_local.shape[0]
+                elif hasattr(model, "nhead"):
+                    H = int(getattr(model, "nhead"))
+                # cache forced basis to avoid repeated QR
+                cached = getattr(self, "_forced_basis_cache", None)
+                if cached is not None and isinstance(cached, torch.Tensor) and cached.device == x.device and cached.dtype == x.dtype:
+                    U_dev = cached
+                else:
+                    U_dev = _make_forced_basis(D, x.device, x.dtype, H)
+                    self._forced_basis_cache = U_dev
+            else:
+                U_dev = U_local.to(x.device, dtype=x.dtype) if isinstance(U_local, torch.Tensor) else None
+
+            if U_dev is None:
+                return x
+
+            alpha = self._rot_alpha
+            mode = self._rot_mode
+
+            # 진단 로그(한 번만 출력하고 싶으면 필요 시 가드 추가)
+            try:
+                if U_dev.dim() == 2 and U_dev.shape == (D, D):
+                    delta = (U_dev - torch.eye(D, device=x.device, dtype=x.dtype)).abs().mean().item()
+                    print(f"[DEBUG U] 2D mean|U-I|={delta:.6e}")
+                elif U_dev.dim() == 3:
+                    H_, dh, _ = U_dev.shape
+                    eye = torch.eye(dh, device=x.device, dtype=x.dtype)
+                    delta = (U_dev - eye).abs().mean().item()
+                    print(f"[DEBUG U] 3D mean|U-I|={delta:.6e} (H={H_}, dh={dh})")
+            except Exception:
+                pass
+
+            # 2D
+            if U_dev.dim() == 2 and U_dev.shape == (D, D):
+                core = x @ U_dev
+                x_new = core if mode == "pure" else (1.0 - alpha) * x + alpha * core
+                return x * (1.0 - m) + x_new * m
+
+            # 3D per-head
+            if U_dev.dim() == 3:
+                H_, dh1, dh2 = U_dev.shape
+                if dh1 == dh2 and D % H_ == 0 and (D // H_) == dh1:
+                    xv = x.view(B, T, H_, dh1)
+                    core = torch.einsum('bthd,hde->bthe', xv, U_dev).reshape(B, T, D)
+                    x_new = core if mode == "pure" else (1.0 - alpha) * x + alpha * core
+                    return x * (1.0 - m) + x_new * m
+
+            return x
+
+        # 바인딩
+        emb.forward = types.MethodType(rotated_forward, emb)
+
+        # 알파 setter는 유지(디버그 편의)
+        def set_alpha_fn(self, val: float):
+            self._rot_alpha.data = torch.tensor(float(val), device=self._rot_alpha.device)
+        def get_alpha_fn(self):
+            return float(self._rot_alpha.item())
+        emb.set_alpha = types.MethodType(set_alpha_fn, emb)
+        emb.get_alpha = types.MethodType(get_alpha_fn, emb)
+
+        print(f"[RGTNet Native] ✅ injected embedding rotation wrapper (alpha={alpha_override}, force={force_basis or 'none'}, mode={rot_mode})")
+        return True
+
+    def _sanity_check_layer0(self, model, tokenizer, alpha_value: float):
+        try:
+            text = "Hello world"
+            ids = tokenizer(text, return_tensors="pt")["input_ids"].to(model.device)
+            rm0 = torch.zeros_like(ids); rm1 = torch.ones_like(ids)
+            with torch.no_grad():
+                e0 = model.embedding(ids, rm0)
+                e1 = model.embedding(ids, rm1)
+                cos = torch.nn.functional.cosine_similarity(e0.flatten(1), e1.flatten(1), dim=1).mean().item()
+                l2 = (e1 - e0).norm(p=2, dim=-1).mean().item()
+            print(f"[SANITY L0] alpha={alpha_value} | cos={cos:.4f} | mean||Δ||={l2:.6f}")
+        except Exception as e:
+            print(f"[SANITY L0] failed: {e}")
+
     def _load_native_rgtnet(self, model_config):
-        """
-        Load native RGTNet using the native implementation and wrap it with RGTNetModelHandler.
-        """
+        """Load native RGTNet and enforce embedding rotation."""
+        import os, json, torch
+        from transformers import AutoTokenizer, AutoConfig
+
+        # Robust import of native model creator/loader
+        try:
+            from rgtnet_model import create_model as create_rgtnet, load_checkpoint as load_rgtnet_checkpoint  # experiments/
+        except Exception:
+            try:
+                from experiments.rgtnet_model import create_model as create_rgtnet, load_checkpoint as load_rgtnet_checkpoint
+            except Exception:
+                from model import create_model as create_rgtnet, load_checkpoint as load_rgtnet_checkpoint  # fallback
+
         model_dir = model_config["model_path"]
         base_model = model_config.get("base_model")
+        user_alpha = float(model_config.get("alpha_embedding", 0.3))
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
 
-        # Prefer native rgtnet_config.json, else fallback to base HF config
         cfg_path = os.path.join(model_dir, "rgtnet_config.json")
         if os.path.exists(cfg_path):
             with open(cfg_path) as f:
                 cfg = json.load(f)
+            chosen_alpha = float(cfg.get("alpha_embed", cfg.get("alpha_embedding", user_alpha)))
             args = SimpleNamespace(
                 vocab_size=cfg["vocab_size"],
                 d_model=cfg["d_model"],
@@ -790,12 +1026,14 @@ class OrthogonalRoleAnalyzer:
                 activation=cfg.get("activation", "silu"),
                 attention_bias=cfg.get("attention_bias", False),
                 mlp_bias=cfg.get("mlp_bias", False),
+                alpha_embedding=chosen_alpha,
             )
             pad_id = cfg.get("pad_token_id", 0)
         else:
             if not base_model:
                 raise RuntimeError("Missing base_model for native RGTNet fallback without rgtnet_config.json")
             hf_cfg = AutoConfig.from_pretrained(base_model, trust_remote_code=True)
+            chosen_alpha = user_alpha
             args = SimpleNamespace(
                 vocab_size=hf_cfg.vocab_size,
                 d_model=hf_cfg.hidden_size,
@@ -812,28 +1050,31 @@ class OrthogonalRoleAnalyzer:
                 activation="silu",
                 attention_bias=False,
                 mlp_bias=False,
+                alpha_embedding=chosen_alpha,
             )
             pad_id = getattr(hf_cfg, "pad_token_id", 0) or 0
 
-        # Tokenizer for text->ids
-        if not base_model:
-            raise RuntimeError("base_model is required to load tokenizer for native RGTNet")
+        # Tokenizer
         tokenizer = AutoTokenizer.from_pretrained(base_model, trust_remote_code=True)
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
 
-        # Build and load native model
+        # Build and load
+        print(f"[RGTNet Native] alpha_embedding (requested) = {args.alpha_embedding}")
         model = create_rgtnet(args, pad_idx=pad_id)
         model = load_rgtnet_checkpoint(model_dir, model, device=str(device))
         model = model.to(device=device, dtype=dtype).eval()
-
-        # Mark and add minimal compatibility fields
         setattr(model, "is_native_rgtnet", True)
         setattr(model, "device", device)
-        # Provide a minimal config shim so generic code can query num_hidden_layers
         model.config = SimpleNamespace(num_hidden_layers=args.num_layers)
 
-        # Wrap in handler so upstream paths work
+        # Enforce rotation on embedding (inject if needed)
+        self._inject_embedding_rotation(getattr(model, "module", model))
+
+        # Sanity log
+        self._sanity_check_layer0(getattr(model, "module", model), tokenizer, args.alpha_embedding)
+
+        # Wrap handler
         handler = RGTNetModelHandler(model, tokenizer, embedding_type="rgtnet")
         return handler
 
@@ -842,12 +1083,10 @@ class OrthogonalRoleAnalyzer:
         checkpoint_path = model_config["model_path"]
         base_model = model_config["base_model"]
 
-        # Tokenizer
         tokenizer = AutoTokenizer.from_pretrained(base_model, trust_remote_code=True)
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
 
-        # Model
         print(f"[HF] Loading model from {checkpoint_path}")
         model = AutoModelForCausalLM.from_pretrained(
             checkpoint_path,
@@ -855,22 +1094,17 @@ class OrthogonalRoleAnalyzer:
             trust_remote_code=True
         )
 
-        # Mark as non-native and no role inputs
         setattr(model, "is_native_rgtnet", False)
+
         # Determine input device for sharded setups
         input_device = None
         dev_map = getattr(model, 'hf_device_map', None)
         if isinstance(dev_map, dict):
-            for key in (
-                'model.embed_tokens',
-                'transformer.wte',
-                'model.decoder.embed_tokens',
-            ):
+            for key in ('model.embed_tokens', 'transformer.wte', 'model.decoder.embed_tokens'):
                 if key in dev_map:
                     input_device = torch.device(dev_map[key])
                     break
         if input_device is None:
-            # Fallback to first parameter's device
             try:
                 input_device = next(model.parameters()).device
             except StopIteration:
@@ -882,57 +1116,7 @@ class OrthogonalRoleAnalyzer:
                 self.tokenizer = tokenizer
                 self.embedding_type = embedding_type
                 self.max_token_len = getattr(model.config, 'max_position_embeddings', 4096)
-                # HF models don't accept role-specific inputs
                 self.supports_role_inputs = False
                 self.input_device = input_device
 
         return HFModelHandler(model, tokenizer, model_config["embedding_type"])
-    
-    
-
-        # 3) Create the native RGTNet model using the native model.py architecture
-        print("[NATIVE] Instantiating native RoleAwareTransformerDecoder...")
-        
-        # Import the native RGTNet class
-        rgtnet_model_path = '/home/ycyoon/work/aside/experiments/rgtnet_model.py'
-        rgtnet_dir = os.path.dirname(rgtnet_model_path)
-        if rgtnet_dir not in sys.path:
-            sys.path.insert(0, rgtnet_dir)
-        
-        from rgtnet_model import RoleAwareTransformerDecoder
-        
-        # Determine device
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        
-        # Create native model instance 
-        model = RoleAwareTransformerDecoder(
-            vocab_size=vocab_size,
-            d_model=d_model,
-            nhead=nhead,
-            num_layers=num_layers,
-            dim_feedforward=dim_feedforward,
-            dropout=dropout,
-            bias_delta=bias_delta,
-            pad_idx=pad_idx,
-            max_seq_len=max_seq_len,
-            use_gradient_checkpointing=use_gradient_checkpointing,
-            num_key_value_heads=num_key_value_heads,
-            architecture_type='llama',
-            device=device
-        )
-        
-        # Load the trained weights
-        print(f"[NATIVE] Loading trained weights from state_dict...")
-        model.load_state_dict(state_dict, strict=False)
-        
-        # Move to device and set eval mode
-        model = model.to(device)
-        model.eval()
-        
-        # Mark as native and create handler
-        setattr(model, 'is_native_rgtnet', True)
-        print(f"[NATIVE] ✅ Native RGTNet loaded successfully!")
-        
-        # Wrap in RGTNetModelHandler
-        handler = RGTNetModelHandler(model, tokenizer, embedding_type="rgtnet")
-        return handler
