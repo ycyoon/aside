@@ -1,7 +1,10 @@
-source .venv/bin/activate  
+export TORCH_DISTRIBUTED_ENABLE_DTENSOR=0
+export TORCH_DISABLE_DYNAMO=1
+
 deepspeed --num_gpus=8 fine-tune.py \
-	--model_family qwen2.5_7b \
-	--train_version SFTv70 \
+	--model_family llama3.2_3b_instruction \
+	--config_path /home/ycyoon/work/aside/experiments/configs/config_llama_3_2_3b_SFTv110.json \
+	--train_version SFTv110 \
 	--emb_type forward_rot \
 	--model_ix 0 \
 	--run_number ASIDE \

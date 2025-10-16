@@ -544,7 +544,7 @@ def load_single_emb_model_and_tokenizer(
         )
 
     # Choose attention implementation and device placement
-    attn_impl = "flash_attention_2" if torch.cuda.is_available() else "eager"
+    attn_impl = "eager"  # Always use eager attention to avoid flash_attn issues
     device_map = "auto" if torch.cuda.is_available() else None
 
     model = model_cls.from_pretrained(
@@ -653,10 +653,10 @@ class CustomModelHandler:
     """
     def __init__(
         self,
-        checkpoint_path: str,
-        instruct_model_path: Optional[str],
-        data_model_path: Optional[str],
-        tokenizer_path: str,
+        checkpoint_path: str = None,
+        instruct_model_path: Optional[str] = None,
+        data_model_path: Optional[str] = None,
+        tokenizer_path: str = None,
         chat_template_path: Optional[str] = None,
         prompt_ix: int = 0,
         embedding_type: str = "single_emb",
@@ -671,6 +671,11 @@ class CustomModelHandler:
         model_dtype=torch.bfloat16,
         rank=None,
         post_init_rotation=False,
+        # 추가 매개변수 for compatibility with orthogonal_role_analysis.py
+        model_name: str = None,
+        base_model_name: str = None,
+        tokenizer_name: str = None,
+        num_layers_to_modify: int = 0,
     ) -> None:
         """
         Initialize the model handler with specified configuration.
@@ -704,6 +709,14 @@ class CustomModelHandler:
             self.split_chat = False
         else:
             self.split_chat = True
+
+        # Handle compatibility parameters from orthogonal_role_analysis.py
+        if model_name is not None and checkpoint_path is None:
+            checkpoint_path = model_name
+        if base_model_name is not None and instruct_model_path is None:
+            instruct_model_path = base_model_name
+        if tokenizer_name is not None and tokenizer_path is None:
+            tokenizer_path = tokenizer_name
 
         self.embedding_type = embedding_type
         self.instruct_model_path = instruct_model_path

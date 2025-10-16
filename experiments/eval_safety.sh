@@ -43,9 +43,11 @@ run_and_log() {
 	("${args[@]}") 2>&1 | tee "$logfile"
 }
 
+CUDA_VISIBLE_DEVICES=7 run_and_log python evaluations/safety_evals/test_safety.py --tensor_parallel_size 1 --model_name /home/ycyoon/work/aside.rgtnet/RGTNet/models/rgtnet_llama-3.1-8b-instruct_20251008/merged_epoch_03 --embedding_type rgtnet --datasets purple --batch_size 1 --use_deepspeed 0 --do_sample 1 --output_dir ./eval_logs/rgtnet
+
 # CUDA_VISIBLE_DEVICES=0 run_and_log python evaluations/safety_evals/test_safety.py --model_name models/rgtnet_llama-3.1-8b-instruct_20250807_2116/merged_epoch_0/ --embedding_type rgtnet_orthonly --datasets all --batch_size 32 --use_deepspeed 0 --output_dir ./eval_logs/rgtnet_orthonly &
 # sleep 1
-# CUDA_VISIBLE_DEVICES=1 run_and_log python evaluations/safety_evals/test_safety.py --model_name models/rgtnet_llama-3.1-8b-instruct_20250807_2116/merged_epoch_0/ --embedding_type rgtnet --datasets all --batch_size 32 --use_deepspeed 0 --output_dir ./eval_logs/rgtnet &
+# CUDA_VISIBLE_DEVICES=0 run_and_log python evaluations/safety_evals/test_safety.py --model_name /home/ycyoon/work/RGTNet/models/rgtnet_llama-3.2-3b-instruct_20250930/merged_best_epoch_03 --embedding_type rgtnet --datasets all --batch_size 32 --use_deepspeed 0 --do_sample 1 --output_dir ./eval_logs/rgtnet
 # sleep 1
 
 # CUDA_VISIBLE_DEVICES=2 run_and_log python evaluations/safety_evals/test_safety.py --model_name models/rgtnet_llama-3.2-1b-instruct_20250807_1044/merged_epoch_0/ --embedding_type rgtnet_orthonly --datasets all --batch_size 32 --use_deepspeed 0 --output_dir ./eval_logs/rgtnet_orthonly &
@@ -69,12 +71,12 @@ run_and_log() {
 # CUDA_VISIBLE_DEVICES=3 run_and_log python evaluations/safety_evals/test_safety.py --model_name models/rgtnet_qwen2.5-7b_20250814_0759/merged_epoch_1/ --embedding_type rgtnet --datasets all --batch_size 4 --use_deepspeed 1 --output_dir ./eval_logs/rgtnet &
 # sleep 1
 
-CUDA_VISIBLE_DEVICES=2 run_and_log python evaluations/safety_evals/test_safety.py --model_name models/rgtnet_llama-3.2-1b-instruct_20250807_1044/merged_epoch_0/ --embedding_type single_emb --datasets all --batch_size 32 --use_deepspeed 0 --output_dir ./eval_logs/single_emb &
-#sleep 1
-CUDA_VISIBLE_DEVICES=3 run_and_log python evaluations/safety_evals/test_safety.py --model_name models/rgtnet_llama-3.2-1b-instruct_20250807_1044/merged_epoch_0/ --embedding_type ise --datasets all --batch_size 32 --use_deepspeed 0 --output_dir ./eval_logs/ise &
-sleep 1
+# CUDA_VISIBLE_DEVICES=2 run_and_log python evaluations/safety_evals/test_safety.py --model_name models/rgtnet_llama-3.2-1b-instruct_20250807_1044/merged_epoch_0/ --embedding_type single_emb --datasets all --batch_size 32 --use_deepspeed 0 --output_dir ./eval_logs/single_emb &
+# #sleep 1
+# CUDA_VISIBLE_DEVICES=3 run_and_log python evaluations/safety_evals/test_safety.py --model_name models/rgtnet_llama-3.2-1b-instruct_20250807_1044/merged_epoch_0/ --embedding_type ise --datasets all --batch_size 32 --use_deepspeed 0 --output_dir ./eval_logs/ise &
+# sleep 1
 
-CUDA_VISIBLE_DEVICES=4 run_and_log python evaluations/safety_evals/test_safety.py --model_name models/rgtnet_llama-3.2-3b-instruct_20250803_1735/merged_epoch_0/ --embedding_type single_emb --datasets all --batch_size 32 --use_deepspeed 0 --output_dir ./eval_logs/single_emb &
-sleep 1
-CUDA_VISIBLE_DEVICES=5 run_and_log python evaluations/safety_evals/test_safety.py --model_name models/rgtnet_llama-3.2-3b-instruct_20250803_1735/merged_epoch_0/ --embedding_type ise --datasets all --batch_size 32 --use_deepspeed 0 --output_dir ./eval_logs/ise &
-sleep 1
+# CUDA_VISIBLE_DEVICES=4 run_and_log python evaluations/safety_evals/test_safety.py --model_name models/rgtnet_llama-3.2-3b-instruct_20250803_1735/merged_epoch_0/ --embedding_type single_emb --datasets all --batch_size 32 --use_deepspeed 0 --output_dir ./eval_logs/single_emb &
+# sleep 1
+# CUDA_VISIBLE_DEVICES=5 run_and_log python evaluations/safety_evals/test_safety.py --model_name models/rgtnet_llama-3.2-3b-instruct_20250803_1735/merged_epoch_0/ --embedding_type ise --datasets all --batch_size 32 --use_deepspeed 0 --output_dir ./eval_logs/ise &
+# sleep 1

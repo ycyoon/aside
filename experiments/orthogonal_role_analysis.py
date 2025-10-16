@@ -106,7 +106,7 @@ class RGTNetModelHandler:
                 hooks.append(layer.register_forward_hook(hook_fn))
 
         try:
-            outputs_raw = self.model(input_ids=input_ids, role_mask=role_mask, attention_mask=attention_mask)
+            outputs_raw = self.model(input_ids=input_ids, role_mask=role_mask)
             logits_tensor, last_hidden_tensor = self._extract_logits_and_last_hidden(outputs_raw)
 
             if not output_hidden_states:
@@ -756,10 +756,12 @@ class OrthogonalRoleAnalyzer:
             # Use standard CustomModelHandler for non-RGTNet or when not forcing native
             print(f"📦 [STANDARD] Loading {model_config['name']} with CustomModelHandler")
             return CustomModelHandler(
+                model_name=model_config["model_path"],
+                base_model_name=model_config["base_model"],
+                tokenizer_name=model_config["base_model"],
                 checkpoint_path=model_config["model_path"],
-                instruct_model_path=None,
-                data_model_path=None,
-                tokenizer_path=model_config["base_model"],
+                chat_template_path=None,
+                num_layers_to_modify=0,
                 embedding_type=model_config["embedding_type"],
                 load_from_checkpoint=model_config.get("load_from_checkpoint", True),
             )
@@ -790,7 +792,7 @@ class OrthogonalRoleAnalyzer:
         except Exception:
             return False
 
-    def _cfg(self, key: str, default=None, cast: str | None = None):
+    def _cfg(self, key: str, default=None, cast=None):
         """
         Fetch config value from self.rgtnet_cfg only (no environment).
         cast: "int" | "float" | "bool"
@@ -931,12 +933,12 @@ class OrthogonalRoleAnalyzer:
             try:
                 if U_dev.dim() == 2 and U_dev.shape == (D, D):
                     delta = (U_dev - torch.eye(D, device=x.device, dtype=x.dtype)).abs().mean().item()
-                    print(f"[DEBUG U] 2D mean|U-I|={delta:.6e}")
+                    #print(f"[DEBUG U] 2D mean|U-I|={delta:.6e}")
                 elif U_dev.dim() == 3:
                     H_, dh, _ = U_dev.shape
                     eye = torch.eye(dh, device=x.device, dtype=x.dtype)
                     delta = (U_dev - eye).abs().mean().item()
-                    print(f"[DEBUG U] 3D mean|U-I|={delta:.6e} (H={H_}, dh={dh})")
+                    #print(f"[DEBUG U] 3D mean|U-I|={delta:.6e} (H={H_}, dh={dh})")
             except Exception:
                 pass
 

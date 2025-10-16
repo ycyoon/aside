@@ -190,3 +190,14 @@ experiments/orthogonal_role_analysis_results/orthogonal_role_separation copy 2.p
 experiments/orthogonal_role_analysis_results/orthogonal_role_separation copy 3.png
 experiments/orthogonal_role_analysis_results/orthogonal_role_separation copy.png
 experiments/oroutput.txt
+experiments/BIPIA/output/email_responses.jsonl
+
+# Log files and evaluation outputs
+*.log
+eval_logs/
+experiments/eval_logs/
+experiments/evaluations/safety_evals/terminal_outputs/
+*_responses.jsonl
+*_metrics.json
+evaluation_summary_*.txt
+experiments/orthogonal_role_analysis_results/orthogonal_analysis_data.pkl

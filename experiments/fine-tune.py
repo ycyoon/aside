@@ -1,4 +1,4 @@
-"""
+r"""
 ASIDE Fine-tuning Script
 
 This is the main training script for reproducing the ASIDE (Architecturally Separated 
@@ -30,12 +30,16 @@ References:
     Section 4.1: Training procedure
 """
 
+import os as _os
+_os.environ.setdefault("TORCH_DISTRIBUTED_ENABLE_DTENSOR", "0")
+_os.environ.setdefault("TORCH_DISABLE_DYNAMO", "1")
+
 import os
 import json
-import torch
-
 from typing import Any, Dict, List
-
+import torch
+import torch._dynamo as _dynamo
+_dynamo.disable()
 from datasets import load_dataset
 from transformers import TrainingArguments, DataCollatorForLanguageModeling
 from transformers import TrainerCallback, TrainerState, TrainerControl
@@ -49,7 +53,6 @@ import logging
 
 from trl import SFTTrainer
 from model import *
-from typing import List, Dict
 from torch.utils.data import Dataset
 
 from model_api import *
@@ -58,6 +61,82 @@ from torch.nn.utils.rnn import pad_sequence
 
 from deepspeed.utils.zero_to_fp32 import convert_zero_checkpoint_to_fp32_state_dict
 from embeddings_init import generate_isoclinic_rotation_matrix
+# Best-effort: disable DTensor interception globally for this process
+# (placeholder to keep context)
+
+
+def _set_attr_by_path(module, path, value, is_param=False):
+    parts = path.split(".")
+    parent = module
+    for p in parts[:-1]:
+        parent = getattr(parent, p)
+    last = parts[-1]
+    if is_param:
+        # Replace parameter preserving name binding
+        parent._parameters[last] = value
+    else:
+        parent._buffers[last] = value
+
+
+def unwrap_dtensor_in_module(module):
+    """Convert any DTensor params/buffers to local plain tensors and preserve ties.
+
+    This prevents PyTorch DTensor dispatcher from intercepting distributed ops during
+    DeepSpeed's broadcast when a DeviceMesh context isn't set up.
+    """
+    try:
+        from torch.distributed.tensor import DTensor  # type: ignore
+    except Exception:
+        DTensor = None
+    if DTensor is None:
+        return
+
+    # Cache mapping from DTensor object id to a single shared local tensor to keep tied weights.
+    dtensor_to_local: Dict[int, torch.Tensor] = {}
+
+    # Parameters
+    for name, param in list(module.named_parameters(recurse=True)):
+        data = param.data
+        if hasattr(data, "__class__") and isinstance(data, DTensor):
+            key = id(data)
+            if key not in dtensor_to_local:
+                dtensor_to_local[key] = data.to_local()
+            local_t = dtensor_to_local[key]
+            new_param = torch.nn.Parameter(local_t, requires_grad=param.requires_grad)
+            _set_attr_by_path(module, name, new_param, is_param=True)
+
+    # Buffers
+    for name, buf in list(module.named_buffers(recurse=True)):
+        if hasattr(buf, "__class__") and isinstance(buf, DTensor):
+            key = id(buf)
+            if key not in dtensor_to_local:
+                dtensor_to_local[key] = buf.to_local()
+            local_t = dtensor_to_local[key]
+            _set_attr_by_path(module, name, local_t, is_param=False)
+
+    # Re-tie weights if the model supports it, to ensure aliases point to local tensors
+    tie_fn = getattr(module, "tie_weights", None)
+    if callable(tie_fn):
+        try:
+            tie_fn()
+        except Exception:
+            pass
+
+
+def _debug_assert_no_dtensor(module):
+    try:
+        from torch.distributed.tensor import DTensor  # type: ignore
+    except Exception:
+        DTensor = None
+    if DTensor is None:
+        return
+    for name, param in module.named_parameters(recurse=True):
+        if isinstance(param.data, DTensor):
+            raise RuntimeError(f"DTensor parameter remains after unwrap: {name}")
+    for name, buf in module.named_buffers(recurse=True):
+        if isinstance(buf, DTensor):
+            raise RuntimeError(f"DTensor buffer remains after unwrap: {name}")
+
 
 
 
@@ -338,6 +417,8 @@ class EmbeddingRotationCallback(TrainerCallback):
                     # create a placeholder for it
                     new_matrix = torch.empty_like(model.rotation_matrix)
 
+                # Ensure tensor is not DTensor by explicit .to(device,dtype)
+                new_matrix = new_matrix.to(device=device, dtype=model_dtype)
                 dist.broadcast(new_matrix, src=0)
                 model.rotation_matrix.data.copy_(new_matrix)
             
@@ -374,7 +455,44 @@ def main(model_family: str, emb_type: str, train_version: str, model_ix: int, ru
         hparams (Dict[str, Any]): Training hyperparameters
         
     """
-    config_path = f"./configs/config_{model_family}_{train_version}.json"
+    # Build config path robustly or use explicit override if provided
+    explicit_config_path = hparams.get("config_path")
+    if explicit_config_path:
+        config_path = explicit_config_path
+    else:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        configs_dir = os.path.join(script_dir, "configs")
+        # normalize model family naming (e.g., "llama3.2_3b_instruction" -> "llama3_2_3b_instruction")
+        normalized_family = str(model_family).replace(".", "_")
+        config_filename = f"config_{normalized_family}_{train_version}.json"
+        config_path = os.path.join(configs_dir, config_filename)
+
+    if not os.path.isfile(config_path):
+        # Provide a helpful error with available configs and hints
+        try:
+            # If explicit path was set, attempt to infer the configs_dir for suggestions
+            if explicit_config_path:
+                base_dir = os.path.dirname(os.path.abspath(explicit_config_path))
+            else:
+                base_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "configs")
+            available = sorted([f for f in os.listdir(base_dir) if f.startswith("config_") and f.endswith(".json")])
+        except Exception:
+            available = []
+        msg_lines = [
+            f"Config file not found: {config_path}",
+            "- Tips:",
+            "  * Ensure model_family matches a config filename after 'config_' and before '_{train_version}.json'",
+            "  * Dots in model_family should be underscores (e.g., 'llama_3_1_8b')",
+            f"  * Train version provided: {train_version}",
+        ]
+        if available:
+            # Optionally filter by train_version to surface closest matches
+            matching_ver = [f for f in available if f.endswith(f"_{train_version}.json")]
+            suggestions = matching_ver if matching_ver else available
+            msg_lines.append("- Available config files:")
+            msg_lines += [f"  • {f}" for f in suggestions]
+        raise FileNotFoundError("\n".join(msg_lines))
+
     config = load_config(config_path)
 
     if dist.get_rank() == 0:
@@ -443,6 +561,18 @@ def main(model_family: str, emb_type: str, train_version: str, model_ix: int, ru
         post_init_rotation=hparams["post_init_rotation"]
     )
 
+    # Safety: unwrap any DTensor params/buffers before DeepSpeed prepares/broadcasts
+    unwrap_dtensor_in_module(handler.model)
+    # Strict check: raise early if anything remains DTensor
+    _debug_assert_no_dtensor(handler.model)
+
+    # Wrap the model to ensure input tensors are on the correct device.
+    handler.model = DeviceSyncWrapper(handler.model)
+
+    # Rank-0 log of key env flags and torch version
+    if (not dist.is_initialized()) or dist.get_rank() == 0:
+        print(f"[Env] TORCH_DISTRIBUTED_ENABLE_DTENSOR={_os.getenv('TORCH_DISTRIBUTED_ENABLE_DTENSOR')} TORCH_DISABLE_DYNAMO={_os.getenv('TORCH_DISABLE_DYNAMO')} torch.version={torch.__version__}")
+
     if handler.tokenizer.pad_token is None:
         print("WARNING: pad_token is None")
     max_length = hparams["max_length"]
@@ -458,6 +588,8 @@ def main(model_family: str, emb_type: str, train_version: str, model_ix: int, ru
 
     print('Datasets created')
  
+    deepspeed_cfg = "deepspeed_config.json" if hparams.get("deepspeed_enable", True) else None
+
     training_args = TrainingArguments(
         output_dir=output_dir,
         num_train_epochs=hparams["num_train_epochs"],
@@ -480,7 +612,7 @@ def main(model_family: str, emb_type: str, train_version: str, model_ix: int, ru
         prediction_loss_only=hparams["prediction_loss_only"],
         bf16=hparams["bf16"],
         remove_unused_columns=hparams["remove_unused_columns"],
-        deepspeed="deepspeed_config.json", 
+        deepspeed=deepspeed_cfg, 
         report_to=hparams["report_to"],
         metric_for_best_model=None,
         gradient_checkpointing=True,  
@@ -554,6 +686,7 @@ if __name__ == "__main__":
     parser.add_argument("--model_ix", type=int, help="Index of the model in the pure_models list.")
     parser.add_argument("--run_number", type=str, default=0, help="Number of the run.")
     parser.add_argument("--train_version", type=str, help="e.g. SFTv11")
+    parser.add_argument("--config_path", type=str, default=None, help="Explicit path to a config JSON; overrides model_family/train_version inference.")
 
     parser.add_argument("--train_type", type=str, default="full", help="full or lora")
     parser.add_argument("--output_dir", type=str, default="./output", help="Output directory for checkpoints and logs.")
@@ -606,6 +739,7 @@ if __name__ == "__main__":
     parser.add_argument("--post_init_rotation", type=str2bool, default=False, help="Rotate embedding after initialization (normally used when loading from checkpoint).")
 
     parser.add_argument("--gradual_rot", type=str2bool, default=False, help="Use gradual rotation every step of training during 1st epoch")
+    parser.add_argument("--deepspeed_enable", type=str2bool, default=True, help="Enable DeepSpeed; if False, Trainer runs with DDP/Accelerate only.")
 
     # Parse the arguments
     args = parser.parse_args()
