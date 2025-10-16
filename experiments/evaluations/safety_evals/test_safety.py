@@ -186,13 +186,14 @@ class NativeRGTNetHandler:
         self.temperature = float(cfg.get("eval_temperature", 0.7))
         self.top_p = float(cfg.get("eval_top_p", 0.9))
         self.top_k = int(cfg.get("eval_top_k", 0))
-        self.auto_empty_cache = bool(cfg.get("eval_empty_cache", True))
-        self.use_autocast = bool(cfg.get("eval_use_autocast", torch.cuda.is_available()))
+        self.auto_empty_cache = bool(cfg.get("eval_empty_cache", False))  # Changed to False for speed
+        self.use_autocast = bool(cfg.get("eval_use_autocast", False))  # Disabled for stability
 
         # Enable faster CUDA kernels when available
         if torch.cuda.is_available():
             torch.backends.cuda.matmul.allow_tf32 = True
             torch.backends.cudnn.benchmark = True
+            torch.backends.cudnn.allow_tf32 = True
 
         # Optional torch.compile support
         if (
@@ -283,7 +284,7 @@ class NativeRGTNetHandler:
             
             # Generate using model.generate() directly like model_test.py
             # ALWAYS use do_sample=True like model_test.py!
-            with torch.no_grad():
+            with torch.no_grad(), torch.cuda.amp.autocast(enabled=False):
                 output_ids = self.model.generate(
                     input_ids=input_ids,
                     role_mask=role_mask,
@@ -293,23 +294,24 @@ class NativeRGTNetHandler:
                     top_p=0.9,
                     pad_token_id=self.tokenizer.pad_token_id,
                     eos_token_id=self.tokenizer.eos_token_id,
+                    use_cache=True,  # Enable KV cache for faster generation
                 )
             
             # Decode - extract only new tokens like model_test.py
             generated_ids = output_ids[0][input_len:]
             response = self.tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
             
-            # Debug first few
+            # Debug first few only
             self._debug_count += 1
             if self._debug_count <= 3:
-                print(f"\n🔍 Debug #{self._debug_count} ({dataset_type})")
-                print(f"� Input length: {input_len}, Generated: {len(generated_ids)} tokens")
-                print(f"🤖 Response: {response[:150]}...")
+                print(f"\nDebug #{self._debug_count} ({dataset_type})")
+                print(f"Input: {input_len} tokens, Generated: {len(generated_ids)} tokens")
+                print(f"Response: {response[:100]}...")
             
-            # Memory cleanup
-            del output_ids, input_ids, role_mask, generated_ids
-            if torch.cuda.is_available():
+            # Lightweight memory cleanup - only every 20 calls to reduce overhead
+            if self._debug_count % 20 == 0 and torch.cuda.is_available():
                 torch.cuda.empty_cache()
+            
             
             return response
                 
@@ -1247,7 +1249,7 @@ def call_model_with_batch_support(
     for i in range(0, total_items, batch_size):
         batch_sys = system_instructions[i : i + batch_size]
         batch_user = user_instructions[i : i + batch_size]
-        responses_batch, meta = handler.call_model_api_batch(
+        responses_batch = handler.call_model_api_batch(
             batch_sys,
             batch_user,
             do_sample=do_sample,
@@ -1255,16 +1257,13 @@ def call_model_with_batch_support(
         )
         responses.extend(responses_batch)
 
-        batch_metadata = meta.get("batch_metadata", []) if isinstance(meta, dict) else []
-        for idx, response_text in enumerate(responses_batch):
-            metadata = batch_metadata[idx] if idx < len(batch_metadata) else {}
-            gen_tokens = metadata.get("generated_length") if isinstance(metadata, dict) else None
-            if gen_tokens is None:
-                try:
-                    gen_tokens = len(handler.tokenizer(response_text, add_special_tokens=False).input_ids)
-                except Exception:
-                    gen_tokens = 0
-            total_generated_tokens += gen_tokens or 0
+        # Estimate token count for progress tracking
+        for response_text in responses_batch:
+            try:
+                gen_tokens = len(handler.tokenizer(response_text, add_special_tokens=False).input_ids)
+            except Exception:
+                gen_tokens = len(response_text.split())  # Rough estimate
+            total_generated_tokens += gen_tokens
 
         processed_items += len(responses_batch)
         if pbar:
